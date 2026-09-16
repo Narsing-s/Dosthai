@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 type Message = { role: 'user' | 'assistant'; content: string; createdAt?: number };
 type Conversation = { id: string; title: string; messages: Message[]; updatedAt: number };
 
+type Model = { id: string; name: string; hint: string };
+
 const suggestions = [
   ['💡', 'Explain a complex topic', 'Explain quantum computing simply'],
   ['💻', 'Help with code', 'Review this code and find bugs'],
@@ -14,7 +16,7 @@ const suggestions = [
   ['📋', 'Analyze data', 'Create a practical analysis plan for this dataset']
 ];
 
-const models = [
+const fallbackModels: Model[] = [
   { id: 'gpt-5.6-luna', name: 'Dosthai Fast', hint: 'Fast, cost-efficient everyday AI' },
   { id: 'gpt-5.6-terra', name: 'Dosthai Balanced', hint: 'Strong reasoning and broad work' },
   { id: 'gpt-5.6-sol', name: 'Dosthai Pro', hint: 'Frontier reasoning and complex work' }
@@ -47,11 +49,13 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [selectedModel, setSelectedModel] = useState(models[0]);
+  const [models, setModels] = useState<Model[]>(fallbackModels);
+  const [selectedModel, setSelectedModel] = useState<Model>(fallbackModels[0]);
   const [dark, setDark] = useState(true);
   const [copied, setCopied] = useState<number | null>(null);
   const [notice, setNotice] = useState('');
   const [listening, setListening] = useState(false);
+  const [capabilities, setCapabilities] = useState<Record<string, boolean>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -64,12 +68,23 @@ export default function Home() {
       const model = localStorage.getItem('dosthai-model');
       if (saved) setConversations(JSON.parse(saved));
       if (theme === 'light') setDark(false);
-      if (model) { const found = models.find(m => m.id === model); if (found) setSelectedModel(found); }
+      if (model) {
+        const found = fallbackModels.find(m => m.id === model);
+        if (found) setSelectedModel(found);
+      }
     } catch { /* ignore malformed browser storage */ }
+
+    fetch('/api/models').then(r => r.ok ? r.json() : null).then(data => {
+      if (!data?.models?.length) return;
+      setModels(data.models);
+      setSelectedModel((current: Model) => data.models.find((m: Model) => m.id === current.id) || data.models[0]);
+    }).catch(() => undefined);
+    fetch('/api/capabilities').then(r => r.ok ? r.json() : null).then(data => setCapabilities(data?.capabilities || {})).catch(() => undefined);
   }, []);
 
   useEffect(() => { localStorage.setItem('dosthai-conversations', JSON.stringify(conversations)); }, [conversations]);
   useEffect(() => { localStorage.setItem('dosthai-model', selectedModel.id); }, [selectedModel]);
+  useEffect(() => { localStorage.setItem('dosthai-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
 
   useEffect(() => {
@@ -174,51 +189,97 @@ export default function Home() {
     await navigator.clipboard.writeText(text); setCopied(index); window.setTimeout(() => setCopied(null), 1400);
   }
 
+  async function shareConversation(c: Conversation | null = conversationId ? conversations.find(x => x.id === conversationId) || null : null) {
+    if (!c) { notify('Open a conversation before sharing it.'); return; }
+    try {
+      const response = await fetch('/api/share', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) });
+      const data = await response.json();
+      if (!response.ok || !data.url) throw new Error(data.error || 'Unable to create share link.');
+      await navigator.clipboard.writeText(data.url);
+      notify('Share link copied.');
+    } catch (e) { notify(e instanceof Error ? e.message : 'Unable to create share link.'); }
+  }
+
   function exportConversation(c: Conversation | null = conversationId ? conversations.find(x => x.id === conversationId) || null : null) {
     if (!c) { notify('Open a conversation before exporting it.'); return; }
     const blob = new Blob([JSON.stringify(c, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob); const a = document.createElement('a');
-    a.href = url; a.download = `${c.title.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'dosthai-chat'}.json`; a.click(); URL.revokeObjectURL(url);
+    a.href = url; a.download = `dosthai-${c.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 35) || 'conversation'}.json`; a.click(); URL.revokeObjectURL(url);
   }
 
-  async function shareConversation(c: Conversation | null = conversationId ? conversations.find(x => x.id === conversationId) || null : null) {
-    if (!c) { notify('Open a conversation before sharing it.'); return; }
-    const response = await fetch('/api/share', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) });
-    const data = await response.json();
-    if (!response.ok || !data.url) { notify(data.error || 'Unable to create share link.'); return; }
-    await navigator.clipboard.writeText(data.url); notify('Share link copied.');
+  function importConversations(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || ''));
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        const valid = items.filter((x): x is Conversation => x && typeof x.id === 'string' && typeof x.title === 'string' && Array.isArray(x.messages));
+        if (!valid.length) throw new Error('No valid Dosthai conversation found.');
+        setConversations(current => [...valid.map(x => ({ ...x, id: makeId() })), ...current]);
+        notify(`${valid.length} conversation${valid.length > 1 ? 's' : ''} imported.`);
+      } catch (e) { notify(e instanceof Error ? e.message : 'Invalid conversation file.'); }
+    };
+    reader.readAsText(file);
+  }
+
+  function handleFile(file: File) {
+    if (file.size > 2 * 1024 * 1024) { notify('Files are limited to 2 MB in this version.'); return; }
+    if (!/\.(txt|md|csv|json|xml|yaml|yml|js|ts|tsx|jsx|java|py|sql|raml|dw)$/i.test(file.name)) { notify('Attach a supported text/code file.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = String(reader.result || '').slice(0, 30000);
+      setInput(current => `${current ? `${current}\n\n` : ''}Please analyze the attached file: ${file.name}\n\n\`\`\`\n${content}\n\`\`\``);
+      notify(`${file.name} added to the message.`);
+    };
+    reader.readAsText(file);
   }
 
   function startVoice() {
     const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!Recognition) { notify('Voice input is not supported by this browser.'); return; }
-    const recognition = new Recognition(); recognition.lang = 'en-IN'; recognition.interimResults = false; recognition.maxAlternatives = 1;
+    if (listening) return;
+    const recognition = new Recognition(); recognition.lang = navigator.language || 'en-US'; recognition.interimResults = false; recognition.maxAlternatives = 1;
     recognition.onstart = () => setListening(true); recognition.onend = () => setListening(false);
-    recognition.onerror = () => { setListening(false); notify('Voice input could not start.'); };
+    recognition.onerror = () => { setListening(false); notify('Voice input could not be started.'); };
     recognition.onresult = (event: any) => setInput(current => `${current}${current ? ' ' : ''}${event.results[0][0].transcript}`);
     recognition.start();
   }
 
-  function attachFile(file: File) {
-    if (file.size > 2 * 1024 * 1024) { notify('Keep attachments under 2 MB for now.'); return; }
-    const reader = new FileReader(); reader.onload = () => setInput(current => `${current}\n\nAttached file: ${file.name}\n\n${String(reader.result || '').slice(0, 30000)}`); reader.readAsText(file);
-  }
+  const sorted = useMemo(() => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt), [conversations]);
+  const recent = useMemo(() => sorted.filter(c => !search.trim() || `${c.title} ${c.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(search.toLowerCase())).slice(0, 20), [sorted, search]);
 
-  function importConversations(file: File) {
-    const reader = new FileReader(); reader.onload = () => {
-      try { const data = JSON.parse(String(reader.result)); const incoming = Array.isArray(data) ? data : [data]; setConversations(current => [...incoming, ...current]); notify('Conversation imported.'); }
-      catch { notify('Invalid Dosthai JSON export.'); }
-    }; reader.readAsText(file);
-  }
+  return <main className={`dosthai ${dark ? '' : 'light'}`}>
+    {sidebarOpen && <button className="mobile-scrim" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />}
+    <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <div className="brand"><span className="brandmark">D</span><span>Dosthai</span><button className="close-sidebar" onClick={() => setSidebarOpen(false)}>×</button></div>
+      <button className="newchat" onClick={newChat}>＋ <span>New chat</span><kbd>Ctrl K</kbd></button>
+      <button className="search-chat" onClick={() => setSearchOpen(!searchOpen)}>⌕ <span>Search chats</span><kbd>Ctrl F</kbd></button>
+      {searchOpen && <div className="search-box"><input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search conversations…" /><button onClick={() => { setSearch(''); setSearchOpen(false); }}>×</button></div>}
+      <div className="navtitle">Recent</div>
+      <div className="history-list">{recent.length ? recent.map(c => <div className={`history-row ${conversationId === c.id ? 'active' : ''}`} key={c.id}><button className="history" onClick={() => openConversation(c)}>◷ <span>{c.title}</span></button><button className="delete-chat" onClick={() => deleteConversation(c.id)} aria-label={`Delete ${c.title}`}>×</button></div>) : <div className="empty-history">{search ? 'No matching conversations.' : 'Your conversations will appear here.'}</div>}</div>
+      <div className="sidebar-section"><div className="navtitle">Workspace</div><button className="sideitem" onClick={newChat}>⌘ <span>AI Chat</span></button><button className="sideitem" onClick={() => notify(capabilities.rag ? 'Knowledge base is enabled.' : 'Knowledge base is planned for the cloud persistence/RAG stage.')}>◫ <span>Files & knowledge</span></button><button className="sideitem" onClick={() => setSettingsOpen(true)}>⚙ <span>Settings</span></button></div>
+      <div className="spacer" />
+      <div className="account"><div className="avatar">N</div><div><strong>Narsing</strong><span>Personal workspace</span></div><button onClick={() => setMenuOpen(!menuOpen)}>•••</button></div>
+    </aside>
 
-  const filtered = useMemo(() => conversations.filter(c => !search || `${c.title} ${c.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(search.toLowerCase())), [conversations, search]);
-  const current = conversationId ? conversations.find(c => c.id === conversationId) || null : null;
+    <section className="main">
+      <header className="topbar"><button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">☰</button><div className="mobilebrand">Dosthai</div><button className="model" onClick={() => setModelOpen(!modelOpen)}>{selectedModel.name} <small>▾</small></button>
+        <div className="topactions"><button onClick={() => exportConversation()}>Export</button><button onClick={() => setMenuOpen(!menuOpen)} aria-label="More options">•••</button></div>
+        {modelOpen && <div className="model-menu">{models.map(model => <button key={model.id} className={selectedModel.id === model.id ? 'selected' : ''} onClick={() => { setSelectedModel(model); setModelOpen(false); }}><span><strong>{model.name}</strong><small>{model.hint}</small></span>{selectedModel.id === model.id && <b>✓</b>}</button>)}</div>}
+        {menuOpen && <div className="menu"><button onClick={() => { shareConversation(); setMenuOpen(false); }}>Share conversation</button><button onClick={() => { exportConversation(); setMenuOpen(false); }}>Export JSON</button><button onClick={() => importRef.current?.click()}>Import JSON</button><button onClick={() => setSettingsOpen(true)}>Settings</button><button onClick={() => { setDark(v => !v); setMenuOpen(false); }}>Switch to {dark ? 'light' : 'dark'} mode</button></div>}
+      </header>
 
-  return <main className={dark ? 'app dark' : 'app'}>
-    {/* Existing Dosthai interface continues here; model state now targets the current model catalog. */}
-    <input ref={fileRef} hidden type="file" accept=".txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.tsx,.jsx,.java,.py,.sql,.raml,.dw" onChange={e => e.target.files?.[0] && attachFile(e.target.files[0])} />
-    <input ref={importRef} hidden type="file" accept="application/json,.json" onChange={e => e.target.files?.[0] && importConversations(e.target.files[0])} />
-    <section style={{display:'none'}} aria-hidden="true">{[filtered.length, current?.id, copied, listening, settingsOpen, searchOpen, menuOpen, modelOpen, sidebarOpen, notice, suggestions.length].join('|')}</section>
-    <div className="workspace-placeholder">Dosthai AI</div>
+      <div className="chat"><div className="center">
+        {!messages.length ? <div className="hero"><div className="hero-icon">✦</div><h1>How can I help?</h1><p>Dosthai is your AI workspace for thinking, coding, writing, research, analysis, and everyday work.</p><div className="suggestions">{suggestions.map(([icon, title, prompt]) => <button key={prompt} onClick={() => send(prompt)}><span>{icon}</span><div><strong>{title}</strong><small>{prompt}</small></div><b>›</b></button>)}</div></div> : <div className="messages">{messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.createdAt || index}-${index}`}><div className="role"><span className={message.role === 'assistant' ? 'ai-avatar' : 'user-avatar'}>{message.role === 'assistant' ? '✦' : 'N'}</span>{message.role === 'assistant' ? 'Dosthai' : 'You'}</div><div className="content">{message.content ? renderContent(message.content) : <span className="typing"><i/><i/><i/></span>}</div>{message.content && message.role === 'assistant' && <div className="message-actions"><button onClick={() => copyMessage(index, message.content)}>{copied === index ? 'Copied' : 'Copy'}</button><button onClick={() => { const prior = messages.slice(0, index).reverse().find(m => m.role === 'user'); if (prior) send(prior.content); }}>Regenerate</button></div>}</article>)}<div ref={endRef}/></div>}
+      </div></div>
+
+      <div className="composer"><div className="composerbox"><button className="attach" onClick={() => fileRef.current?.click()} aria-label="Attach file">＋</button><textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Message Dosthai…" rows={1} /><button className={`voice ${listening ? 'active' : ''}`} onClick={startVoice} aria-label="Voice input">◉</button><button className={`send ${busy ? 'stop' : ''}`} onClick={busy ? stopGeneration : () => send()} disabled={!busy && !input.trim()} aria-label={busy ? 'Stop generation' : 'Send'}>{busy ? '■' : '↑'}</button></div><div className="composer-note">Dosthai can make mistakes. Check important information.</div></div>
+    </section>
+
+    <input ref={fileRef} hidden type="file" accept=".txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.tsx,.jsx,.java,.py,.sql,.raml,.dw" onChange={e => { const file = e.target.files?.[0]; if (file) handleFile(file); e.currentTarget.value = ''; }} />
+    <input ref={importRef} hidden type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importConversations(file); e.currentTarget.value = ''; }} />
+
+    {notice && <div className="toast">{notice}</div>}
+    {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><div className="settings-modal" onClick={e => e.stopPropagation()}><div className="modal-head"><h2>Dosthai settings</h2><button onClick={() => setSettingsOpen(false)}>×</button></div><div className="setting"><div><strong>Appearance</strong><small>Choose the interface theme.</small></div><div className="setting-actions"><button className="theme-toggle" onClick={() => setDark(true)}>Dark</button><button className="theme-toggle" onClick={() => setDark(false)}>Light</button></div></div><div className="setting"><div><strong>AI model</strong><small>{selectedModel.name} · {selectedModel.hint}</small></div><button className="theme-toggle" onClick={() => { setSettingsOpen(false); setModelOpen(true); }}>Change</button></div><div className="setting"><div><strong>Local privacy</strong><small>Browser conversation history is stored locally in this version.</small></div><button className="theme-toggle" onClick={() => { localStorage.removeItem('dosthai-conversations'); setConversations([]); notify('Local conversation history cleared.'); }}>Clear</button></div><div className="setting"><div><strong>Capabilities</strong><small>{Object.entries(capabilities).filter(([, value]) => value).length} advanced capabilities currently configured.</small></div><button className="theme-toggle" onClick={() => notify('Dosthai is designed for model routing, tools, knowledge, multimodal input and agent workflows.')}>Details</button></div><div className="settings-footer">Dosthai AI · privacy-first local workspace · advanced cloud features activate when their server integrations are configured.</div></div></div>}
   </main>;
 }
