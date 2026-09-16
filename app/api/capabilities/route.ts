@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 export async function GET() {
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.7.0',
+    version: '0.8.0',
     capabilities: {
       streamingChat: true,
       multipleModels: true,
@@ -18,6 +18,8 @@ export async function GET() {
       shareLinks: true,
       toolRegistry: true,
       calculatorTool: true,
+      agentOrchestration: true,
+      multiStepToolCalling: true,
       webResearch: Boolean(process.env.WEB_SEARCH_API_URL && process.env.WEB_SEARCH_API_KEY),
       cloudPersistence: Boolean(process.env.DATABASE_URL),
       authentication: Boolean(process.env.AUTH_SECRET),
@@ -33,7 +35,7 @@ export async function GET() {
       'Authenticated cloud conversations with account isolation',
       'Real web research with citations and source controls',
       'PDF, DOCX, spreadsheet and image ingestion with permission-aware RAG',
-      'Native tool calling and multi-step agent orchestration',
+      'Expanded native tool calling and multi-step agent orchestration',
       'Sandboxed code execution with resource limits',
       'Multimodal image, audio and generated-file workflows',
       'GitHub and developer workflows with explicit authorization',
