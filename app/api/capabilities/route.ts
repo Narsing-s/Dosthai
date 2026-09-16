@@ -5,10 +5,11 @@ export const runtime = 'nodejs';
 export async function GET() {
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.6.0',
+    version: '0.7.0',
     capabilities: {
       streamingChat: true,
       multipleModels: true,
+      modelFallback: true,
       conversationSearch: true,
       localHistory: true,
       importExport: true,
@@ -16,6 +17,7 @@ export async function GET() {
       fileContext: true,
       shareLinks: true,
       toolRegistry: true,
+      calculatorTool: true,
       webResearch: Boolean(process.env.WEB_SEARCH_API_URL && process.env.WEB_SEARCH_API_KEY),
       cloudPersistence: Boolean(process.env.DATABASE_URL),
       authentication: Boolean(process.env.AUTH_SECRET),
@@ -28,14 +30,14 @@ export async function GET() {
       productionSecurityHeaders: true
     },
     next: [
-      'Cloud conversations and authentication',
-      'Real web research with citations',
-      'Document knowledge bases and RAG',
-      'Tool calling and autonomous agents',
-      'Sandboxed code execution',
-      'Multimodal image and voice workflows',
-      'GitHub and developer workflows',
-      'Long-running resumable agents and background jobs'
+      'Authenticated cloud conversations with account isolation',
+      'Real web research with citations and source controls',
+      'PDF, DOCX, spreadsheet and image ingestion with permission-aware RAG',
+      'Native tool calling and multi-step agent orchestration',
+      'Sandboxed code execution with resource limits',
+      'Multimodal image, audio and generated-file workflows',
+      'GitHub and developer workflows with explicit authorization',
+      'Long-running resumable agents, background jobs and observability'
     ]
-  });
+  }, { headers: { 'cache-control': 'no-store' } });
 }
