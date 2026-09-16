@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 export async function GET() {
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.8.0',
+    version: '0.8.1',
     capabilities: {
       streamingChat: true,
       multipleModels: true,
@@ -13,6 +13,8 @@ export async function GET() {
       conversationSearch: true,
       localHistory: true,
       importExport: true,
+      localProjects: true,
+      localMemoryControls: true,
       voiceInput: true,
       fileContext: true,
       shareLinks: true,
