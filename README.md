@@ -1,16 +1,23 @@
 # Dosthai AI
 
-Dosthai is a full-stack AI assistant workspace designed to grow into a general-purpose AI platform.
+Dosthai is a general-purpose AI assistant workspace built to evolve into a full AI platform.
 
-## Current capabilities
+## What is working now
 
-- ChatGPT-style responsive chat workspace
-- Conversation state in the browser
-- Streaming responses from an OpenAI-compatible chat-completions endpoint
-- Provider-independent server configuration through environment variables
-- Clean mobile and desktop UI
-- Suggested prompts and new-chat flow
+- ChatGPT-style responsive desktop and mobile chat UI
+- New chat and recent conversation history
+- Browser-local conversation persistence
+- Open and delete saved conversations
+- Streaming AI responses through an OpenAI-compatible endpoint
+- Model selector for supported Dosthai modes
+- Copy and regenerate assistant responses
+- Code-block rendering for fenced responses
+- Text/code file attachment into the prompt (up to 2 MB)
+- Dark and light themes
+- Settings panel and keyboard shortcuts
+- Mobile sidebar navigation
 - Server-side API-key handling
+- Request validation and provider error handling
 
 ## Run locally
 
@@ -22,24 +29,96 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-To enable live model responses, put your provider key in `.env.local`. Never commit the real key.
+### Environment
 
-## Architecture roadmap
-
-```text
-Web UI
-  -> Chat API
-      -> Model Gateway
-          -> LLM provider(s)
-      -> Context / Memory
-      -> RAG / Files
-      -> Tools
-      -> Agents
-  -> Database / Object Storage
+```env
+OPENAI_API_KEY=your_key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5-mini
 ```
 
-Planned layers include authentication, persistent conversations, file uploads, RAG, web research, tool calling, long-term memory, agent workflows, coding assistance, MuleSoft/DataWeave assistance, observability, safety controls, and production deployment.
+The real API key must stay server-side and must never be committed to Git.
+
+## Product architecture
+
+```text
+                 ┌─────────────────────────┐
+                 │      Dosthai Web UI     │
+                 │ chat • history • files  │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │       Chat API          │
+                 │ validation • streaming  │
+                 └────────────┬────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────┐
+                 │     Model Gateway       │
+                 │ OpenAI-compatible API   │
+                 └────────────┬────────────┘
+                              │
+             ┌────────────────┼────────────────┐
+             ▼                ▼                ▼
+          Models           Memory            Tools
+             │                │                │
+             └────────────────┼────────────────┘
+                              ▼
+                    RAG / Knowledge / Agents
+                              │
+                              ▼
+                    Database + Object Storage
+```
+
+## Roadmap to a full AI assistant
+
+### Foundation
+- Authentication and user accounts
+- Cloud-synced conversations across devices
+- Database-backed conversation storage
+- Secure sessions and rate limiting
+
+### ChatGPT-style capabilities
+- Conversation search, rename, archive and export
+- Branching conversations
+- Better markdown and code rendering
+- Model/provider switching
+- Voice input and speech output
+- Image input and generation
+- Multi-file uploads
+
+### Knowledge and research
+- Document ingestion
+- Embeddings and vector search
+- Personal knowledge bases
+- Web research tools with citations
+- Source-aware answers
+
+### AI agents
+- Tool calling
+- Multi-step workflows
+- Coding agent
+- Browser automation
+- Background jobs
+- Long-term memory with user controls
+
+### Dosthai specialization
+- MuleSoft assistant
+- DataWeave generator and debugger
+- RAML/API design helper
+- Integration-pattern assistant
+- Developer workspace and project analysis
+
+### Production
+- Observability and audit logs
+- Abuse prevention and quotas
+- Automated tests and CI
+- Error tracking
+- Production deployment and custom domain
 
 ## Engineering note
 
-Dosthai uses Next.js App Router as the application foundation. The App Router is Next.js's modern routing architecture for React and full-stack applications.
+Dosthai uses the Next.js App Router as its application foundation. Next.js describes the App Router as its newer routing architecture for modern React applications. The current Next.js 16.3.3 release is Active LTS. citeturn0search1turn0search0
+
+For future streaming, multi-provider, tool and agent work, Dosthai can adopt the current Vercel AI SDK, which provides a unified TypeScript layer for AI applications and supports streaming and multiple model providers. citeturn0search2
