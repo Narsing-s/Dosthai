@@ -1,11 +1,12 @@
 {
   "name": "dosthai-ai",
-  "version": "0.6.0",
+  "version": "0.8.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "quality:contract": "node scripts/product-contract-check.mjs"
   },
   "dependencies": {
     "next": "16.3.3",
