@@ -7,6 +7,8 @@ const SYSTEM_PROMPT = `You are Dosthai AI, a general-purpose AI assistant built 
 const DEFAULT_MODELS = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5-mini', 'gpt-5'];
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 30;
+const MAX_HISTORY = 30;
+const MAX_HISTORY_ITEM = 20_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function allowedModels() {
@@ -34,6 +36,13 @@ function rateLimited(key: string) {
   return current.count > RATE_LIMIT;
 }
 
+function providerHeaders(apiKey: string) {
+  return {
+    'content-type': 'application/json',
+    authorization: `Bearer ${apiKey}`
+  };
+}
+
 export async function POST(request: Request) {
   if (rateLimited(clientKey(request))) {
     return NextResponse.json(
@@ -42,7 +51,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const body = await request.json().catch(() => ({}));
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid JSON request body.' }, { status: 400 });
+  }
+
   const message = typeof body.message === 'string' ? body.message.trim() : '';
   const history = Array.isArray(body.history) ? body.history : [];
   const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
@@ -50,45 +63,53 @@ export async function POST(request: Request) {
 
   if (!message) return NextResponse.json({ error: 'Message is required.' }, { status: 400 });
   if (message.length > 30000) return NextResponse.json({ error: 'Message is too long. Keep it under 30,000 characters.' }, { status: 413 });
+  if (history.length > 100) return NextResponse.json({ error: 'Conversation history is too large.' }, { status: 413 });
 
   const apiKey = process.env.OPENAI_API_KEY;
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
   const configuredModel = process.env.OPENAI_MODEL || [...models][0];
-  const model = models.has(requestedModel) ? requestedModel : (models.has(configuredModel) ? configuredModel : [...models][0]);
+  const preferred = models.has(requestedModel) ? requestedModel : (models.has(configuredModel) ? configuredModel : [...models][0]);
+  const fallbackModels = [preferred, ...[...models].filter(model => model !== preferred)].slice(0, 3);
 
   if (!apiKey) return NextResponse.json({ error: 'No AI provider is configured. Add OPENAI_API_KEY to the server environment.' }, { status: 503 });
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...history.slice(-30).filter((item: any) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map((item: any) => ({ role: item.role, content: item.content.slice(0, 30000) })),
+    ...history.slice(-MAX_HISTORY)
+      .filter((item: any) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+      .map((item: any) => ({ role: item.role, content: item.content.slice(0, MAX_HISTORY_ITEM) })),
     { role: 'user', content: message }
   ];
 
-  try {
-    const upstream = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, stream: true }),
-      cache: 'no-store'
-    });
+  let lastDetail = 'Provider request failed';
+  for (const model of fallbackModels) {
+    try {
+      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: providerHeaders(apiKey),
+        body: JSON.stringify({ model, messages, stream: true }),
+        cache: 'no-store'
+      });
 
-    if (!upstream.ok || !upstream.body) {
-      const detail = await upstream.text().catch(() => 'Provider request failed');
-      return NextResponse.json({ error: `AI provider error: ${detail.slice(0, 500)}` }, { status: 502 });
-    }
-
-    return new Response(upstream.body, {
-      status: 200,
-      headers: {
-        'content-type': 'text/event-stream; charset=utf-8',
-        'cache-control': 'no-cache, no-transform',
-        connection: 'keep-alive',
-        'x-accel-buffering': 'no',
-        'x-dosthai-model': model
+      if (upstream.ok && upstream.body) {
+        return new Response(upstream.body, {
+          status: 200,
+          headers: {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+            'x-dosthai-model': model
+          }
+        });
       }
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'Network request failed';
-    return NextResponse.json({ error: `Unable to contact AI provider: ${detail}` }, { status: 502 });
+
+      const detail = await upstream.text().catch(() => 'Provider request failed');
+      lastDetail = detail.slice(0, 500);
+    } catch (error) {
+      lastDetail = error instanceof Error ? error.message : 'Network request failed';
+    }
   }
+
+  return NextResponse.json({ error: `Unable to generate a response: ${lastDetail}` }, { status: 502 });
 }
