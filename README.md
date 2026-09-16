@@ -119,6 +119,4 @@ The real API key must stay server-side and must never be committed to Git.
 
 ## Engineering note
 
-Dosthai uses the Next.js App Router as its application foundation. Next.js describes the App Router as its newer routing architecture for modern React applications. The current Next.js 16.3.3 release is Active LTS. citeturn0search1turn0search0
-
-For future streaming, multi-provider, tool and agent work, Dosthai can adopt the current Vercel AI SDK, which provides a unified TypeScript layer for AI applications and supports streaming and multiple model providers. citeturn0search2
+Dosthai uses the Next.js App Router as its application foundation. The project is designed so the chat layer can later adopt a modern AI SDK for standardized streaming, multiple providers, tools and agent workflows.
