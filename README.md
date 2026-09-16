@@ -1,105 +1,126 @@
 # Dosthai AI
 
-Dosthai is a general-purpose AI assistant workspace designed to grow into a secure, multi-model product with chat, files, research, tools, agents, memory and multimodal capabilities.
+Dosthai is a general-purpose AI workspace designed to become a secure, multi-model assistant for chat, coding, research, files, knowledge, tools, agents and multimodal work.
 
-## Current product foundation
+## What is working now
 
-- ChatGPT-style responsive workspace
-- Streaming AI conversations
-- Conversation history stored locally in the browser
-- New chat, rename-by-first-message, open and delete flows
-- Model selector foundation
-- Copy and regenerate actions
-- Markdown/code-block presentation
-- Text/code file attachment into prompts
-- Dark/light theme
-- Mobile sidebar and keyboard shortcuts
-- Server-side provider credentials
-- Health and model-discovery API endpoints
-- Share API foundation
-- Continuous Integration build workflow
+- ChatGPT-style responsive workspace with dark/light mode
+- Streaming AI conversations through an OpenAI-compatible server endpoint
+- Current Dosthai model catalog with Fast, Balanced and Pro tiers
+- Runtime model discovery through `/api/models`
+- Local browser conversation history with search, open, delete and export/import
+- Copy and regenerate response actions
+- Markdown and code-block presentation
+- Text/code attachments for prompt context
+- Browser voice input
+- Stop generation with `AbortController`
+- Conversation share links through `/api/share` and `/share/[id]`
+- Capability discovery through `/api/capabilities`
+- Basic per-IP chat rate limiting and request-size/history limits
+- Branded loading, error and not-found states
+- Server-side provider credentials; API keys are never sent to the browser
+- CI workflow for the production build
 
-## Advanced product roadmap
+## Product direction
 
-### Chat
-- Persistent cloud conversations
-- Search across conversations
-- Conversation folders, archive and pin
-- Edit user messages and branch/regenerate responses
-- Stop generation and retry failed generations
-- Message reactions and feedback
-- Conversation export/import
+Dosthai is being built as an AI operating workspace rather than only a chat box. The target platform has six layers:
 
-### Accounts and security
+1. **Chat** — fast streaming, editing, branching, regeneration, search, folders, archive, pinning and durable history.
+2. **Intelligence** — multi-model routing, fallbacks, structured output, long-context management and task-specific modes.
+3. **Tools & agents** — web research, browser tasks, code execution, file operations, connectors and multi-step workflows with explicit user control.
+4. **Knowledge** — PDF/DOCX/images/spreadsheets/code ingestion, semantic search, personal knowledge bases and grounded answers with citations.
+5. **Creation** — image, speech, transcription, document and code generation with reusable artifacts.
+6. **Trust** — authentication, authorization, encryption where appropriate, rate limits, audit logs, privacy controls, usage controls and observability.
+
+## Advanced roadmap
+
+### Accounts and cloud sync
 - Email/password and OAuth authentication
-- Session management
+- Secure sessions and per-user authorization
+- PostgreSQL persistence for users, conversations and messages
 - Account deletion and data export
-- Per-user authorization
-- Rate limiting and abuse protection
-- Audit logging and secure headers
+- Cross-device synchronization
 
 ### AI platform
-- Multiple model providers
-- Automatic model routing
-- Fallback models
-- Tool calling
-- Multi-step agents
-- Structured output
-- Long-context management
+- OpenAI-compatible providers plus a model gateway abstraction
+- Automatic routing by task, latency and cost
+- Provider/model fallbacks
+- Tool calling and multi-step agents
+- Structured outputs and typed actions
+- Usage, latency and cost tracking
 - Prompt/version management
-- Usage and cost tracking
 
-### Knowledge and multimodal
-- PDF, DOCX, images, spreadsheets and code uploads
-- Document parsing and chunking
-- Embeddings and semantic search
-- Personal knowledge bases
-- Web research with citations
-- Image understanding and generation
+### Research and knowledge
+- Real-time web search and page extraction with source citations
+- PDF, DOCX, spreadsheet, image and code ingestion
+- Chunking, embeddings and semantic retrieval
+- Personal/team knowledge bases
+- Grounded-answer controls and source inspection
+
+### Multimodal creation
+- Vision and document understanding
+- Image generation/editing
 - Speech-to-text and text-to-speech
+- Realtime voice conversations
+- Generated files and reusable artifacts
 
-### Developer AI
-- Code generation and review
-- Secure code execution sandbox
-- GitHub integration
+### Developer workspace
+- Code generation, review and debugging
+- Sandboxed code execution
+- GitHub repositories, issues and pull requests
+- API/RAML tooling
 - MuleSoft/DataWeave specialist mode
-- API/RAML assistance
-- Debugging and test generation
+- Test generation and structured technical workflows
 
 ### Production
-- PostgreSQL persistence
-- Object storage
-- Background jobs
-- Observability and tracing
-- Automated tests
-- Preview deployments
-- Production deployment and monitoring
+- Object storage for attachments
+- Background jobs for indexing and long-running tasks
+- Distributed rate limiting
+- Secure headers and abuse controls
+- OpenTelemetry-compatible tracing/metrics
+- Automated unit, integration, browser and end-to-end tests
+- Preview and production deployment pipelines
 
 ## Architecture
 
 ```text
-Browser / Mobile Web
-        |
-        v
-Next.js App Router
-        |
-        +--> Authentication / Authorization
-        |
-        +--> Chat API / AI SDK
-        |       |
-        |       +--> Model Gateway --> Multiple LLM Providers
-        |       +--> Tools / Agents
-        |       +--> Web Research
-        |       +--> RAG / Knowledge
-        |
-        +--> PostgreSQL --> Users / Chats / Messages / Usage
-        |
-        +--> Object Storage --> Files / Attachments
-        |
-        +--> Background Jobs --> Indexing / Long Tasks
-        |
-        +--> Observability --> Logs / Metrics / Traces
+                    Dosthai Web / Mobile Web
+                              |
+                              v
+                    Next.js App Router
+                              |
+        +---------------------+----------------------+
+        |                     |                      |
+        v                     v                      v
+   Auth & Policy        Chat / Agent Runtime     Artifact UI
+        |                     |                      |
+        |          +----------+----------+           |
+        |          |          |          |           |
+        |          v          v          v           |
+        |       Models      Tools      RAG        Files/Media
+        |          |          |          |           |
+        |          +----------+----------+-----------+
+        |                     |
+        v                     v
+   PostgreSQL             Provider Gateway
+   users/chats/usage      OpenAI + other models
+        |                     |
+        +----------+----------+
+                   |
+                   v
+          Background / Observability
 ```
+
+## Environment
+
+Copy `.env.example` to `.env.local`. The important baseline variables are:
+
+- `OPENAI_API_KEY` — server-side model credential
+- `OPENAI_BASE_URL` — OpenAI-compatible provider endpoint
+- `OPENAI_MODEL` — default model
+- `DOSTHAI_MODELS` — comma-separated model allow-list
+
+Advanced environment variables are documented in `.env.example`. They are intentionally optional so the core app can run without provisioning every cloud service first.
 
 ## Local development
 
@@ -111,8 +132,6 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-Set `OPENAI_API_KEY` in `.env.local` for live model responses. Never commit real credentials.
+## Product principle
 
-## Important
-
-The repository is the product codebase, but advanced cloud features such as authentication, database persistence, web research and file indexing require their respective services and credentials before they can operate in production.
+Dosthai should not pretend a feature exists just because a button exists. Each advanced capability is treated as a real server-side integration with explicit configuration, error handling, security controls and verification before being marked production-ready.
