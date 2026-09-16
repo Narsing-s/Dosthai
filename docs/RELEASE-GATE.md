@@ -45,6 +45,6 @@ Dosthai will **not** be deployed to Vercel or released to production until the p
 
 **Develop → Test → CI → browser verification → security review → staging → acceptance → release → production deployment.**
 
-Vercel deployment is intentionally deferred until all required gates are green. Next.js supports this development/preview/ship workflow, and Vercel provides preview deployments for pushed branches. citeturn0search3
+Vercel deployment is intentionally deferred until all required gates are green.
 
 The goal is not to ship a feature checklist. The goal is to ship a dependable AI workspace where every visible capability is actually connected to a working backend capability.
