@@ -1,0 +1,32 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; font-family: Arial, Helvetica, sans-serif; background: #0b0d12; color: #f5f7fb; }
+button, textarea { font: inherit; }
+button { cursor: pointer; }
+.dosthai { min-height: 100vh; display: flex; }
+.sidebar { width: 270px; border-right: 1px solid #252936; background: #10131a; padding: 18px; display: flex; flex-direction: column; gap: 18px; }
+.brand { font-size: 22px; font-weight: 800; letter-spacing: -.4px; }
+.brand span { color: #8b7cff; }
+.newchat { border: 1px solid #343948; background: #181c25; color: white; border-radius: 10px; padding: 11px 13px; text-align: left; }
+.navtitle { color: #8e95a5; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.history { color: #c7cbd5; font-size: 14px; padding: 9px 10px; border-radius: 8px; }
+.history.active { background: #1c202b; }
+.spacer { flex: 1; }
+.account { border-top: 1px solid #252936; padding-top: 14px; color: #aeb4c2; font-size: 13px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar { height: 64px; border-bottom: 1px solid #252936; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+.model { color: #dfe3ec; font-weight: 650; }
+.status { color: #777f91; font-size: 12px; }
+.chat { flex: 1; overflow: auto; padding: 48px 20px 170px; }
+.center { max-width: 850px; margin: 0 auto; }
+.hero { text-align: center; padding: 90px 0 30px; }
+.hero h1 { font-size: 44px; margin: 0 0 12px; letter-spacing: -1.5px; }
+.hero p { color: #969dad; margin: 0; }
+.message { margin: 18px 0; line-height: 1.65; }
+.message.user { background: #181c25; border: 1px solid #252a35; border-radius: 14px; padding: 14px 16px; margin-left: auto; max-width: 80%; }
+.message.assistant { padding: 10px 2px; }
+.role { font-size: 12px; color: #858c9c; margin-bottom: 5px; }
+.composer { position: fixed; left: 270px; right: 0; bottom: 0; padding: 20px; background: linear-gradient(transparent, #0b0d12 25%); }
+.composerbox { max-width: 850px; margin: 0 auto; border: 1px solid #353a48; background: #151821; border-radius: 16px; padding: 10px; display: flex; gap: 10px; box-shadow: 0 12px 40px #0008; }
+.composer textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: white; padding: 10px; min-height: 44px; }
+.send { border: 0; border-radius: 11px; padding: 0 17px; background: #8b7cff; color: white; font-weight: 700; }
+@media (max-width: 760px) { .sidebar { display: none; } .composer { left: 0; } .hero h1 { font-size: 34px; } .chat { padding-top: 25px; } }
