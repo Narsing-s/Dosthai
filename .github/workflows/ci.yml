@@ -7,12 +7,14 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  quality-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
       - run: npm install
+      - run: npm run quality:contract
       - run: npm run build
