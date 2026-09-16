@@ -42,4 +42,4 @@ Planned layers include authentication, persistent conversations, file uploads, R
 
 ## Engineering note
 
-Dosthai uses Next.js App Router as the application foundation. Next.js documents the App Router as the newer router for modern React features and full-stack application development. citeturn0search0turn0search5
+Dosthai uses Next.js App Router as the application foundation. The App Router is Next.js's modern routing architecture for React and full-stack applications.
