@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { LOCAL_MODEL_ID, LOCAL_MODEL_NAME } from '../../../lib/local-assistant';
 
 export const runtime = 'nodejs';
 
@@ -9,31 +10,21 @@ const labels: Record<string, { name: string; hint: string }> = {
 };
 
 function configuredModels() {
-  const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
-    .split(',')
-    .map(v => v.trim())
-    .filter(Boolean);
-
-  return [...new Set(configured)];
+  return [...new Set((process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean))];
 }
 
 export async function GET() {
   const ids = configuredModels();
-  const models = ids.map((id, index) => ({
-    id,
-    name: labels[id]?.name || (index === 0 ? 'Dosthai Default' : `Dosthai Model ${index + 1}`),
-    hint: labels[id]?.hint || 'Provider-configured AI model'
-  }));
+  const providerModels = ids.map((id, index) => ({ id, name: labels[id]?.name || (index === 0 ? 'Dosthai Default' : `Dosthai Model ${index + 1}`), hint: labels[id]?.hint || 'Provider-configured AI model' }));
+  const provider = Boolean(process.env.OPENAI_API_KEY && ids.length);
+  const models = providerModels.length ? providerModels : [{ id: LOCAL_MODEL_ID, name: LOCAL_MODEL_NAME, hint: 'No API key required; transparent local fallback mode' }];
 
   return NextResponse.json({
     models,
-    configuredProvider: Boolean(process.env.OPENAI_API_KEY),
-    provider: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    ready: Boolean(process.env.OPENAI_API_KEY && ids.length),
-    message: !process.env.OPENAI_API_KEY
-      ? 'Configure OPENAI_API_KEY on the server.'
-      : !ids.length
-        ? 'Configure OPENAI_MODEL or DOSTHAI_MODELS on the server.'
-        : undefined
+    configuredProvider: provider,
+    localMode: !provider,
+    provider: provider ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') : 'local',
+    ready: true,
+    message: provider ? undefined : 'Dosthai is running in local mode. Connect a model provider later for full generative AI.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
