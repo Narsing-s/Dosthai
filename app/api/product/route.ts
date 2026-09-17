@@ -18,13 +18,14 @@ const features = [
   { id: 'automation', name: 'Automation/background work', status: 'planned' },
   { id: 'cloud', name: 'Accounts and cloud sync', status: 'integration-required' },
   { id: 'privacy', name: 'Export and deletion controls', status: 'core' },
+  { id: 'runtime', name: 'Installable offline shell and resilient composer', status: 'core' },
   { id: 'observability', name: 'Usage and observability', status: 'planned' }
 ] as const;
 
 export async function GET() {
   return NextResponse.json({
     product: 'Dosthai AI',
-    version: '0.8.1',
+    version: '0.8.3',
     philosophy: 'Every visible capability must map to a real, tested backend capability.',
     features,
     release: {
