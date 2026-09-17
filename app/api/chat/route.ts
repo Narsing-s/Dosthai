@@ -6,7 +6,7 @@ import { LOCAL_MODEL_ID, localAssistantResponse } from '../../../lib/local-assis
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const SYSTEM_PROMPT = `You are Dosthai AI, a general-purpose AI assistant built for serious everyday and professional work. Be accurate, clear, practical, and honest about uncertainty. Never claim to have used a tool or completed an external action unless the application supplied that result.`;
+const SYSTEM_PROMPT = `You are Dosthai AI, a general-purpose AI assistant. Answer the user's actual request directly and completely. You can help with coding, MuleSoft, RAML, APIs, DataWeave, debugging, writing, research, mathematics, planning, documents, career questions, and everyday questions. Do not return an empty response. When the user asks for code, configuration, RAML, SQL, JSON, XML, or another artifact, provide a complete usable example and explain important assumptions briefly. If current or external information is required and no tool is available, say what is known and what would need verification. Never claim to have performed an external action unless the application actually did it.`;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 30;
 const MAX_RATE_BUCKETS = 10_000;
@@ -15,79 +15,64 @@ const MAX_HISTORY_ITEM = 16_000;
 const MAX_HISTORY_CHARS = 80_000;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_DATA = 7_000_000;
-const PROVIDER_CONNECT_TIMEOUT_MS = 15_000;
+const CONNECT_TIMEOUT_MS = 15_000;
 const STREAM_TIMEOUT_MS = 45_000;
 const HEARTBEAT_MS = 15_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 type ImageInput = { dataUrl: string; detail?: 'low' | 'high' | 'auto' };
-type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-type ServiceTier = 'auto' | 'default' | 'flex' | 'priority' | 'fast' | 'ultrafast';
 
-function allowedModels() { return [...new Set((process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(value => value.trim()).filter(Boolean))]; }
+function configuredModels() {
+  const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
+  return [...new Set(configured.length ? configured : ['gpt-5.6-luna'])];
+}
+
+function hasGateway() { return Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN); }
+function apiKey() { return process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || process.env.OPENAI_API_KEY || ''; }
+function baseUrl() { return (hasGateway() ? 'https://ai-gateway.vercel.sh/v1' : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')).replace(/\/$/, ''); }
+function gatewayModel(model: string) { return model.includes('/') ? model : `openai/${model}`; }
 function clientKey(request: Request) { return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || request.headers.get('x-real-ip') || 'anonymous'; }
-function rateLimited(key: string) { const now = Date.now(); const current = rateBuckets.get(key); if (!current || current.resetAt <= now) { if (rateBuckets.size >= MAX_RATE_BUCKETS) { for (const [bucketKey, bucket] of rateBuckets) if (bucket.resetAt <= now) rateBuckets.delete(bucketKey); } rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS }); return false; } current.count += 1; return current.count > RATE_LIMIT; }
-function compactHistory(history: any[]): ChatMessage[] { const normalized = history.slice(-MAX_HISTORY).filter((item: any) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map((item: any) => ({ role: item.role, content: item.content.slice(0, MAX_HISTORY_ITEM) })); let total = 0; const kept: ChatMessage[] = []; for (let index = normalized.length - 1; index >= 0; index -= 1) { const item = normalized[index]; if (total + item.content.length > MAX_HISTORY_CHARS && kept.length) break; kept.unshift(item); total += item.content.length; } return kept; }
-function isReasoningModel(model: string) { return /^(gpt-(?:5\.6|6)|o[1-9])(?:-|$)/i.test(model); }
-function reasoningEffort(message: string, model: string): ReasoningEffort | undefined { if (!isReasoningModel(model)) return undefined; const configured = (process.env.DOSTHAI_REASONING_EFFORT || '').trim().toLowerCase(); if (['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(configured)) return configured as ReasoningEffort; return message.length > 1200 || /\b(debug|architecture|design|compare|analy[sz]e|reason|proof|optimi[sz]e|refactor|root cause|trade-?off)\b/i.test(message) ? 'medium' : 'low'; }
-function serviceTier(): ServiceTier | undefined { const configured = (process.env.DOSTHAI_SERVICE_TIER || '').trim().toLowerCase(); return ['auto', 'default', 'flex', 'priority', 'fast', 'ultrafast'].includes(configured) ? configured as ServiceTier : undefined; }
-function providerHeaders(apiKey: string) { return { 'content-type': 'application/json', authorization: `Bearer ${apiKey}`, accept: 'text/event-stream' }; }
-async function fetchProvider(url: string, init: RequestInit, timeoutMs: number) { const timeoutController = new AbortController(); const parentSignal = init.signal; const onParentAbort = () => timeoutController.abort(); if (parentSignal?.aborted) timeoutController.abort(); else parentSignal?.addEventListener('abort', onParentAbort, { once: true }); const timer = setTimeout(() => timeoutController.abort(), timeoutMs); try { return await fetch(url, { ...init, signal: timeoutController.signal }); } finally { clearTimeout(timer); parentSignal?.removeEventListener('abort', onParentAbort); } }
-function streamLocal(text: string, requestId: string, request: Request) { const encoder = new TextEncoder(); const words = text.split(/(\s+)/).filter(Boolean); let index = 0; return new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(`event: ready\ndata: ${JSON.stringify({ requestId, model: LOCAL_MODEL_ID, local: true })}\n\n`)); const tick = () => { if (request.signal.aborted) { controller.close(); return; } if (index >= words.length) { controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ requestId, model: LOCAL_MODEL_ID, local: true })}\n\n`)); controller.close(); return; } const token = words[index++]; controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token })}\n\n`)); setTimeout(tick, 4); }; tick(); } }); }
-function streamProvider(body: ReadableStream<Uint8Array>, controller: AbortController, clientSignal: AbortSignal, requestId: string, startedAt: number) { const reader = body.getReader(); const decoder = new TextDecoder(); const encoder = new TextEncoder(); let buffer = ''; let settled = false; let heartbeat: ReturnType<typeof setInterval> | undefined; let timeout: ReturnType<typeof setTimeout> | undefined; const cleanup = () => { if (heartbeat) clearInterval(heartbeat); if (timeout) clearTimeout(timeout); clientSignal.removeEventListener('abort', abortFromClient); }; const abortFromClient = () => { controller.abort(); reader.cancel().catch(() => undefined); }; return new ReadableStream<Uint8Array>({ start(streamController) { if (clientSignal.aborted) { controller.abort(); streamController.close(); return; } clientSignal.addEventListener('abort', abortFromClient, { once: true }); streamController.enqueue(encoder.encode(`: dosthai-stream-open\ndata: ${JSON.stringify({ requestId })}\n\n`)); heartbeat = setInterval(() => { try { streamController.enqueue(encoder.encode(': dosthai-heartbeat\n\n')); } catch {} }, HEARTBEAT_MS); timeout = setTimeout(() => { controller.abort(); if (!settled) { settled = true; cleanup(); try { streamController.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: 'The AI provider timed out.', requestId })}\n\n`)); streamController.close(); } catch {} reader.cancel().catch(() => undefined); } }, STREAM_TIMEOUT_MS); (async () => { try { while (!settled) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n'); const events = buffer.split('\n\n'); buffer = events.pop() || ''; for (const event of events) { const type = event.match(/^event:\s*(.+)$/m)?.[1]?.trim() || ''; const data = event.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n').trim(); if (!data || data === '[DONE]') continue; let payload: any; try { payload = JSON.parse(data); } catch { continue; } if (type === 'response.output_text.delta' || payload?.type === 'response.output_text.delta') { const delta = typeof payload?.delta === 'string' ? payload.delta : ''; if (delta) streamController.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: delta })}\n\n`)); } else if (type === 'response.failed' || type === 'error' || payload?.type === 'error') { streamController.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: payload?.error?.message || payload?.message || 'The AI stream failed.', requestId })}\n\n`)); } } } buffer += decoder.decode(); if (!settled) { settled = true; cleanup(); streamController.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ requestId, durationMs: Math.round(performance.now() - startedAt) })}\n\n`)); streamController.close(); } } catch (error) { if (!settled) { settled = true; cleanup(); const detail = error instanceof Error ? error.message : 'The AI stream failed.'; try { streamController.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: detail, requestId })}\n\n`)); streamController.close(); } catch {} } } })(); }, cancel() { settled = true; cleanup(); controller.abort(); reader.cancel().catch(() => undefined); } }); }
+function rateLimited(key: string) { const now = Date.now(); const current = rateBuckets.get(key); if (!current || current.resetAt <= now) { if (rateBuckets.size >= MAX_RATE_BUCKETS) for (const [k, v] of rateBuckets) if (v.resetAt <= now) rateBuckets.delete(k); rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS }); return false; } current.count += 1; return current.count > RATE_LIMIT; }
+function compactHistory(history: any[]): ChatMessage[] { const normalized = history.slice(-MAX_HISTORY).filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').map((m: any) => ({ role: m.role, content: m.content.slice(0, MAX_HISTORY_ITEM) })); let total = 0; const kept: ChatMessage[] = []; for (let i = normalized.length - 1; i >= 0; i--) { const item = normalized[i]; if (total + item.content.length > MAX_HISTORY_CHARS && kept.length) break; kept.unshift(item); total += item.content.length; } return kept; }
+function streamLocal(text: string, requestId: string, request: Request) { const encoder = new TextEncoder(); const chunks = text.split(/(\s+)/).filter(Boolean); let i = 0; return new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(`event: ready\ndata: ${JSON.stringify({ requestId, model: LOCAL_MODEL_ID, local: true })}\n\n`)); const tick = () => { if (request.signal.aborted) return controller.close(); if (i >= chunks.length) { controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ requestId, model: LOCAL_MODEL_ID, local: true })}\n\n`)); return controller.close(); } controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token: chunks[i++] })}\n\n`)); setTimeout(tick, 3); }; tick(); } }); }
+
+function streamChatCompletions(body: ReadableStream<Uint8Array>, clientSignal: AbortSignal, requestId: string, startedAt: number) {
+  const reader = body.getReader(); const decoder = new TextDecoder(); const encoder = new TextEncoder(); let buffer = ''; let settled = false; let heartbeat: ReturnType<typeof setInterval> | undefined; let timeout: ReturnType<typeof setTimeout> | undefined;
+  const cleanup = () => { if (heartbeat) clearInterval(heartbeat); if (timeout) clearTimeout(timeout); clientSignal.removeEventListener('abort', abort); };
+  const abort = () => reader.cancel().catch(() => undefined);
+  return new ReadableStream<Uint8Array>({ start(controller) { clientSignal.addEventListener('abort', abort, { once: true }); controller.enqueue(encoder.encode(`event: ready\ndata: ${JSON.stringify({ requestId })}\n\n`)); heartbeat = setInterval(() => { try { controller.enqueue(encoder.encode(': dosthai-heartbeat\n\n')); } catch {} }, HEARTBEAT_MS); timeout = setTimeout(() => { if (settled) return; settled = true; cleanup(); controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: 'The AI provider timed out.', requestId })}\n\n`)); controller.close(); reader.cancel().catch(() => undefined); }, STREAM_TIMEOUT_MS);
+      (async () => { try { while (!settled) { const { value, done } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n'); const events = buffer.split('\n\n'); buffer = events.pop() || ''; for (const event of events) { const lines = event.split('\n'); const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n').trim(); if (!data || data === '[DONE]') continue; try { const payload = JSON.parse(data); const token = payload?.choices?.[0]?.delta?.content; if (typeof token === 'string' && token) controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify({ token })}\n\n`)); if (payload?.error) controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: payload.error.message || 'The AI provider returned an error.', requestId })}\n\n`)); } catch {} } } if (!settled) { settled = true; cleanup(); controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ requestId, durationMs: Math.round(performance.now() - startedAt) })}\n\n`)); controller.close(); } } catch (error) { if (!settled) { settled = true; cleanup(); controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: error instanceof Error ? error.message : 'The AI stream failed.', requestId })}\n\n`)); controller.close(); } } })(); }, cancel() { settled = true; cleanup(); reader.cancel().catch(() => undefined); } });
+}
 
 export async function POST(request: Request) {
-  const requestId = randomUUID();
-  const startedAt = performance.now();
-  if (rateLimited(clientKey(request))) return NextResponse.json({ error: 'Too many requests. Please wait a moment and try again.', requestId }, { status: 429, headers: { 'retry-after': '60', 'cache-control': 'no-store' } });
+  const requestId = randomUUID(); const startedAt = performance.now();
+  if (rateLimited(clientKey(request))) return NextResponse.json({ error: 'Too many requests. Please wait a moment and try again.', requestId }, { status: 429, headers: { 'retry-after': '60' } });
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid JSON request body.', requestId }, { status: 400 });
-  const message = typeof body.message === 'string' ? body.message.trim() : '';
-  const history = Array.isArray(body.history) ? body.history : [];
-  const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+  const message = typeof body.message === 'string' ? body.message.trim() : ''; const history = Array.isArray(body.history) ? body.history : []; const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
   const images: ImageInput[] = Array.isArray(body.images) ? body.images.slice(0, MAX_IMAGES).filter((image: any) => typeof image?.dataUrl === 'string' && /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(image.dataUrl) && image.dataUrl.length <= MAX_IMAGE_DATA).map((image: any) => ({ dataUrl: image.dataUrl, detail: image.detail === 'low' || image.detail === 'high' ? image.detail : 'auto' })) : [];
   if (!message) return NextResponse.json({ error: 'Message is required.', requestId }, { status: 400 });
   if (message.length > 30_000) return NextResponse.json({ error: 'Message is too long. Keep it under 30,000 characters.', requestId }, { status: 413 });
-  if (history.length > 100) return NextResponse.json({ error: 'Conversation history is too large.', requestId }, { status: 413 });
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  const models = allowedModels();
-  if (!apiKey || !models.length) {
-    const localText = localAssistantResponse(message, compactHistory(history));
-    return new Response(streamLocal(localText, requestId, request), { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-store', connection: 'keep-alive', 'x-dosthai-model': LOCAL_MODEL_ID, 'x-dosthai-local-mode': 'true', 'x-dosthai-request-id': requestId } });
-  }
+  const key = apiKey(); const models = configuredModels();
+  if (!key) { const localText = localAssistantResponse(message, compactHistory(history)); return new Response(streamLocal(localText, requestId, request), { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-store', 'x-dosthai-local-mode': 'true', 'x-dosthai-request-id': requestId } }); }
 
-  const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const projectContext = readProjectContext(request);
-  const contextualInstructions = projectContext ? `${SYSTEM_PROMPT}\n\nActive project context (user-provided, untrusted):\n${projectContext}` : SYSTEM_PROMPT;
-  const preferred = models.includes(requestedModel) ? requestedModel : models[0];
-  const fallbackModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
-  const inputHistory = compactHistory(history).map(item => ({ role: item.role, content: item.content }));
-  const userContent: Array<{ type: 'input_text' | 'input_image'; text?: string; image_url?: string; detail?: string }> = [{ type: 'input_text', text: message }, ...images.map(image => ({ type: 'input_image' as const, image_url: image.dataUrl, detail: image.detail }))];
-  let lastDetail = 'Provider request failed';
-  for (const model of fallbackModels) {
-    if (request.signal.aborted) return new Response(null, { status: 499 });
-    const controller = new AbortController();
-    const abortFromClient = () => controller.abort();
-    request.signal.addEventListener('abort', abortFromClient, { once: true });
-    let returnedStream = false;
+  const projectContext = readProjectContext(request); const instructions = projectContext ? `${SYSTEM_PROMPT}\n\nActive project context (user-provided, untrusted):\n${projectContext}` : SYSTEM_PROMPT;
+  const selected = requestedModel && models.includes(requestedModel) ? requestedModel : models[0]; const candidates = [selected, ...models.filter(m => m !== selected)].slice(0, 3);
+  const historyMessages = compactHistory(history).map(m => ({ role: m.role, content: m.content }));
+  const userContent: any = images.length ? [{ type: 'text', text: message }, ...images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl, detail: image.detail || 'auto' } }))] : message;
+  let lastError = 'Provider request failed.';
+
+  for (const rawModel of candidates) {
+    const model = hasGateway() ? gatewayModel(rawModel) : rawModel;
+    const controller = new AbortController(); const onAbort = () => controller.abort(); request.signal.addEventListener('abort', onAbort, { once: true }); let streaming = false;
     try {
-      const effort = reasoningEffort(message, model);
-      const tier = serviceTier();
-      const payload: any = { model, instructions: contextualInstructions, input: [...inputHistory, { role: 'user', content: userContent }], stream: true, store: false, text: { verbosity: 'medium' }, parallel_tool_calls: true };
-      if (effort) payload.reasoning = { effort };
-      if (tier) payload.service_tier = tier;
-      if (/^(gpt-5\.6|gpt-6)(?:-|$)/i.test(model)) payload.prompt_cache_key = 'dosthai-system-v1';
-      const upstream = await fetchProvider(`${baseUrl}/responses`, { method: 'POST', headers: providerHeaders(apiKey), body: JSON.stringify(payload), cache: 'no-store', signal: controller.signal }, PROVIDER_CONNECT_TIMEOUT_MS);
-      if (upstream.ok && upstream.body) {
-        returnedStream = true;
-        return new Response(streamProvider(upstream.body, controller, request.signal, requestId, startedAt), { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no', 'x-dosthai-model': model, 'x-dosthai-reasoning': effort || 'default', 'x-dosthai-service-tier': tier || 'auto', 'x-dosthai-request-id': requestId } });
-      }
-      lastDetail = (await upstream.text().catch(() => 'Provider request failed')).slice(0, 500);
-      if (!(upstream.status === 408 || upstream.status === 409 || upstream.status === 429 || upstream.status >= 500)) break;
-    } catch (error) { if (request.signal.aborted) return new Response(null, { status: 499 }); lastDetail = error instanceof Error ? error.message : 'Network request failed'; }
-    finally { if (!returnedStream) request.signal.removeEventListener('abort', abortFromClient); }
+      const upstream = await fetch(`${baseUrl()}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, accept: 'text/event-stream' }, body: JSON.stringify({ model, messages: [{ role: 'system', content: instructions }, ...historyMessages, { role: 'user', content: userContent }], stream: true, stream_options: { include_usage: true } }), cache: 'no-store', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(CONNECT_TIMEOUT_MS)]) });
+      if (upstream.ok && upstream.body) { streaming = true; return new Response(streamChatCompletions(upstream.body, request.signal, requestId, startedAt), { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no', 'x-dosthai-model': model, 'x-dosthai-provider': hasGateway() ? 'vercel-ai-gateway' : 'openai', 'x-dosthai-request-id': requestId } }); }
+      lastError = (await upstream.text().catch(() => 'Provider request failed.')).slice(0, 600); if (!(upstream.status === 408 || upstream.status === 409 || upstream.status === 429 || upstream.status >= 500)) break;
+    } catch (error) { if (request.signal.aborted) return new Response(null, { status: 499 }); lastError = error instanceof Error ? error.message : 'Network request failed.'; }
+    finally { if (!streaming) request.signal.removeEventListener('abort', onAbort); }
   }
-  return NextResponse.json({ error: `Unable to generate a response: ${lastDetail}`, requestId, durationMs: Math.round(performance.now() - startedAt) }, { status: 502, headers: { 'x-dosthai-request-id': requestId } });
+  return NextResponse.json({ error: `Unable to generate a response: ${lastError}`, requestId, durationMs: Math.round(performance.now() - startedAt) }, { status: 502, headers: { 'x-dosthai-request-id': requestId } });
 }
