@@ -17,6 +17,7 @@ const MAX_HISTORY = 20;
 const MAX_HISTORY_ITEM = 12_000;
 const MAX_HISTORY_CHARS = 60_000;
 const REQUEST_TIMEOUT_MS = 45_000;
+const RESEARCH_TIMEOUT_MS = 15_000;
 
 function allowedModels() {
   const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
@@ -72,7 +73,7 @@ async function webResearch(query: string, signal?: AbortSignal): Promise<AgentSo
   const key = process.env.WEB_SEARCH_API_KEY;
   if (!endpoint || !key) throw new Error('Web research is not configured.');
   if (!query.trim() || query.length > 2000) throw new Error('Research query is invalid.');
-  const response = await fetchWithTimeout(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ query: query.trim(), num_results: MAX_RESULTS }), cache: 'no-store', signal }, REQUEST_TIMEOUT_MS);
+  const response = await fetchWithTimeout(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ query: query.trim(), num_results: MAX_RESULTS }), cache: 'no-store', signal }, RESEARCH_TIMEOUT_MS);
   if (!response.ok) throw new Error(`Research provider returned HTTP ${response.status}.`);
   const data: unknown = await response.json();
   const object = data && typeof data === 'object' ? data as Record<string, unknown> : {};
@@ -83,10 +84,12 @@ async function webResearch(query: string, signal?: AbortSignal): Promise<AgentSo
   }).filter((source: AgentSource) => Boolean(source.url));
 }
 
-const tools = [
-  { type: 'function', function: { name: 'calculator', description: 'Evaluate basic arithmetic exactly. Use for arithmetic instead of estimating.', parameters: { type: 'object', properties: { expression: { type: 'string' } }, required: ['expression'], additionalProperties: false } } },
-  { type: 'function', function: { name: 'web_research', description: 'Search current public information and return source metadata. Use when current or externally verifiable information is required.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } } }
-];
+const calculatorTool = { type: 'function', function: { name: 'calculator', description: 'Evaluate basic arithmetic exactly. Use for arithmetic instead of estimating.', parameters: { type: 'object', properties: { expression: { type: 'string' } }, required: ['expression'], additionalProperties: false } } };
+const researchTool = { type: 'function', function: { name: 'web_research', description: 'Search current public information and return source metadata. Use when current or externally verifiable information is required.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } } };
+
+function availableTools() {
+  return process.env.WEB_SEARCH_API_URL && process.env.WEB_SEARCH_API_KEY ? [calculatorTool, researchTool] : [calculatorTool];
+}
 
 type ParsedToolCall = { raw: unknown; name: string; args: Record<string, unknown>; callId: string };
 
@@ -138,12 +141,14 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
     historyChars += content.length;
     return [{ role: item.role, content }];
   }).reverse();
+  const tools = availableTools();
+  const researchConfigured = tools.length > 1;
 
   let lastError: unknown;
   for (let modelIndex = 0; modelIndex < orderedModels.length; modelIndex++) {
     const model = orderedModels[modelIndex];
     try {
-      const messages: ProviderMessage[] = [{ role: 'system', content: 'You are Dosthai Agent. Complete the user task using available tools when useful. Never invent tool results. Use web_research for current or externally verifiable information and calculator for arithmetic. External or mutating actions are not available in this runtime. Return a concise, useful final answer and mention research sources when used.' }, ...history, { role: 'user', content: message }];
+      const messages: ProviderMessage[] = [{ role: 'system', content: `You are Dosthai Agent. Complete the user task using available tools when useful. Never invent tool results. ${researchConfigured ? 'Use web_research for current or externally verifiable information and mention research sources when used.' : 'Web research is not configured, so do not claim to have searched the web.'} Use calculator for arithmetic. External or mutating actions are not available in this runtime. Return a concise, useful final answer.` }, ...history, { role: 'user', content: message }];
       const sources: AgentSource[] = [];
       const toolResults: AgentToolResult[] = [];
       for (let step = 0; step < MAX_STEPS; step++) {
