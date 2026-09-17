@@ -10,20 +10,29 @@ const labels: Record<string, { name: string; hint: string }> = {
 };
 
 function configuredModels() {
-  const ids = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
+  const ids = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
+    .split(',').map(v => v.trim()).filter(Boolean);
   return [...new Set(ids.length ? ids : ['gpt-5.6-luna'])];
 }
 
 export async function GET() {
-  // Vercel production can authenticate AI Gateway through platform OIDC, so a static
-  // AI_GATEWAY_API_KEY is not required for a deployed Vercel project.
-  const gateway = Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || process.env.VERCEL);
+  // VERCEL only means the app is running on Vercel. It is NOT proof that an
+  // AI Gateway credential is available. OIDC is valid only when a token exists.
+  const gateway = Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN);
   const direct = Boolean(process.env.OPENAI_API_KEY);
   const provider = gateway || direct;
   const ids = configuredModels();
   const models = provider
-    ? ids.map((id, index) => ({ id, name: labels[id]?.name || (index === 0 ? 'Dosthai Default' : `Dosthai Model ${index + 1}`), hint: labels[id]?.hint || 'General-purpose AI model' }))
-    : [{ id: LOCAL_MODEL_ID, name: LOCAL_MODEL_NAME, hint: 'Local browser AI — connect an AI provider for open-ended generation' }];
+    ? ids.map((id, index) => ({
+        id,
+        name: labels[id]?.name || (index === 0 ? 'Dosthai Default' : `Dosthai Model ${index + 1}`),
+        hint: labels[id]?.hint || 'General-purpose AI model',
+      }))
+    : [{
+        id: LOCAL_MODEL_ID,
+        name: LOCAL_MODEL_NAME,
+        hint: 'AI provider is not configured — add AI_GATEWAY_API_KEY for open-ended generation',
+      }];
 
   return NextResponse.json({
     models,
@@ -31,6 +40,6 @@ export async function GET() {
     localMode: !provider,
     provider: gateway ? 'vercel-ai-gateway' : direct ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') : 'local',
     ready: true,
-    message: provider ? undefined : 'No AI provider credentials are available. Open-ended questions require an AI provider.'
+    message: provider ? undefined : 'No AI provider credentials are available. Add AI_GATEWAY_API_KEY in Vercel Environment Variables and redeploy.',
   }, { headers: { 'cache-control': 'no-store' } });
 }
