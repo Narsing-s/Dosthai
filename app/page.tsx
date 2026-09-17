@@ -56,7 +56,7 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const persistTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -83,7 +83,7 @@ export default function Home() {
   useEffect(() => { localStorage.setItem('dosthai-conversations', JSON.stringify(conversations)); }, [conversations]);
   useEffect(() => { if (selectedModel.id) localStorage.setItem('dosthai-model', selectedModel.id); }, [selectedModel]);
   useEffect(() => { localStorage.setItem('dosthai-theme', dark ? 'dark' : 'light'); }, [dark]);
-  useEffect(() => () => { if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current); }, []);
+  useEffect(() => () => { if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current); }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' }); }, [messages, busy]);
 
   useEffect(() => {
@@ -110,11 +110,11 @@ export default function Home() {
 
   function scheduleSave(nextMessages: Message[], id: string, immediate = false) {
     if (immediate) {
-      if (persistTimerRef.current) { window.clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
+      if (persistTimerRef.current !== null) { window.clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
       saveCurrent(nextMessages, id);
       return;
     }
-    if (persistTimerRef.current) return;
+    if (persistTimerRef.current !== null) return;
     persistTimerRef.current = window.setTimeout(() => {
       persistTimerRef.current = null;
       saveCurrent(nextMessages, id);
