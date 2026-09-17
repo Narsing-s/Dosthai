@@ -10,7 +10,8 @@ const MAX_RATE_BUCKETS = 10_000;
 const MAX_HISTORY = 24;
 const MAX_HISTORY_ITEM = 16_000;
 const MAX_HISTORY_CHARS = 80_000;
-const REQUEST_TIMEOUT_MS = 45_000;
+const PROVIDER_CONNECT_TIMEOUT_MS = 15_000;
+const STREAM_TIMEOUT_MS = 45_000;
 const HEARTBEAT_MS = 15_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -136,7 +137,7 @@ function streamWithHeartbeat(body: ReadableStream<Uint8Array>, controller: Abort
           try { streamController.close(); } catch { /* stream already closed */ }
           reader.cancel().catch(() => undefined);
         }
-      }, REQUEST_TIMEOUT_MS);
+      }, STREAM_TIMEOUT_MS);
 
       (async () => {
         try {
@@ -228,7 +229,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({ model, messages, stream: true }),
         cache: 'no-store',
         signal: controller.signal
-      }, REQUEST_TIMEOUT_MS);
+      }, PROVIDER_CONNECT_TIMEOUT_MS);
 
       if (upstream.ok && upstream.body) {
         returnedStream = true;
@@ -251,7 +252,7 @@ export async function POST(request: Request) {
     } catch (error) {
       if (request.signal.aborted) return new Response(null, { status: 499 });
       lastDetail = error instanceof Error && error.name === 'AbortError'
-        ? 'The AI provider timed out.'
+        ? 'The AI provider connection timed out.'
         : error instanceof Error ? error.message : 'Network request failed';
     } finally {
       if (!returnedStream) request.signal.removeEventListener('abort', abortFromClient);
