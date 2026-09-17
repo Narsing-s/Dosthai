@@ -9,10 +9,11 @@ export async function GET() {
   const authentication = Boolean(process.env.AUTH_SECRET);
   const models = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
   const provider = Boolean(process.env.OPENAI_API_KEY && models.length);
+  const imageGeneration = Boolean(process.env.IMAGE_API_KEY || process.env.OPENAI_API_KEY);
 
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.8.3',
+    version: '0.8.4',
     capabilities: {
       streamingChat: provider,
       fastFirstTokenPath: provider,
@@ -28,6 +29,7 @@ export async function GET() {
       shareLinks: true,
       toolRegistry: true,
       calculatorTool: true,
+      structuredJsonTool: true,
       agentOrchestration: provider,
       multiStepToolCalling: provider,
       webResearch,
@@ -36,14 +38,14 @@ export async function GET() {
       objectStorage: Boolean(process.env.STORAGE_BUCKET),
       codeExecution: Boolean(process.env.CODE_EXECUTION_ENABLED),
       rag: Boolean(process.env.VECTOR_DATABASE_URL),
-      imageGeneration: Boolean(process.env.IMAGE_API_KEY),
+      imageGeneration,
       speech: Boolean(process.env.SPEECH_API_KEY),
       githubIntegration: Boolean(process.env.GITHUB_APP_ID || process.env.GITHUB_TOKEN),
       offlineAppShell: true,
       installableWebApp: true,
       productionSecurityHeaders: true
     },
-    configured: { provider, models: models.length, webResearch, cloudPersistence, authentication },
+    configured: { provider, models: models.length, webResearch, cloudPersistence, authentication, imageGeneration },
     next: [
       'Authenticated cloud conversations with account isolation',
       'Real web research with citations and source controls',
