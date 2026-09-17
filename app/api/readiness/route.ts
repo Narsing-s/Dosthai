@@ -41,6 +41,6 @@ export async function GET() {
     checks,
     blockers,
     optionalIntegrations: optional,
-    note: 'Optional integrations are reported separately. Dosthai never pretends an unavailable integration is active.'
+    note: 'Optional integrations are reported separately. Dosthai never pretends an unavailable integration is active. Missing optional integrations are reported explicitly.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
