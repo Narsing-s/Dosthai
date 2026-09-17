@@ -9,6 +9,7 @@ const RATE_LIMIT = 30;
 const MAX_RATE_BUCKETS = 10_000;
 const MAX_HISTORY = 24;
 const MAX_HISTORY_ITEM = 16_000;
+const MAX_HISTORY_CHARS = 80_000;
 const REQUEST_TIMEOUT_MS = 45_000;
 const HEARTBEAT_MS = 15_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -56,6 +57,26 @@ function shouldFallback(status: number) {
   return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
+function compactHistory(history: any[]) {
+  const normalized = history.slice(-MAX_HISTORY)
+    .filter((item: any) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+    .map((item: any) => ({ role: item.role, content: item.content.slice(0, MAX_HISTORY_ITEM) }));
+
+  let total = 0;
+  const kept: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const item = normalized[index];
+    if (total + item.content.length > MAX_HISTORY_CHARS && kept.length > 0) break;
+    if (total + item.content.length > MAX_HISTORY_CHARS) {
+      kept.unshift({ role: item.role, content: item.content.slice(-MAX_HISTORY_CHARS) });
+      break;
+    }
+    kept.unshift(item);
+    total += item.content.length;
+  }
+  return kept;
+}
+
 async function fetchProvider(url: string, init: RequestInit, timeoutMs: number) {
   const timeoutController = new AbortController();
   const parentSignal = init.signal;
@@ -78,17 +99,17 @@ function streamWithHeartbeat(body: ReadableStream<Uint8Array>, controller: Abort
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
 
+  const abortFromClient = () => {
+    controller.abort();
+    reader.cancel().catch(() => undefined);
+  };
+
   const cleanup = () => {
     if (heartbeat) clearInterval(heartbeat);
     if (timeout) clearTimeout(timeout);
     clientSignal.removeEventListener('abort', abortFromClient);
     heartbeat = undefined;
     timeout = undefined;
-  };
-
-  const abortFromClient = () => {
-    controller.abort();
-    reader.cancel().catch(() => undefined);
   };
 
   return new ReadableStream<Uint8Array>({
@@ -186,9 +207,7 @@ export async function POST(request: Request) {
   const fallbackModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...history.slice(-MAX_HISTORY)
-      .filter((item: any) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
-      .map((item: any) => ({ role: item.role, content: item.content.slice(0, MAX_HISTORY_ITEM) })),
+    ...compactHistory(history),
     { role: 'user', content: message }
   ];
 
