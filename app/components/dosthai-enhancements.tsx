@@ -4,13 +4,120 @@ import { useEffect, useRef, useState } from 'react';
 
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
 const IMAGE_MAX_CHARS = 7_000_000;
+const LOCAL_MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
+
+type LocalStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+type ChatMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
 
 export default function DosthaiEnhancements() {
   const pendingImageRef = useRef<string | null>(null);
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const engineRef = useRef<any>(null);
+  const enginePromiseRef = useRef<Promise<any> | null>(null);
   const [imageAttached, setImageAttached] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [localStatus, setLocalStatus] = useState<LocalStatus>('idle');
+  const [localProgress, setLocalProgress] = useState('Local AI is ready when you need it.');
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  async function getLocalEngine() {
+    if (engineRef.current) return engineRef.current;
+    if (enginePromiseRef.current) return enginePromiseRef.current;
+    if (!('gpu' in navigator)) {
+      throw new Error('This browser does not expose WebGPU. Use a WebGPU-capable browser or configure a server model.');
+    }
+
+    setLocalStatus('loading');
+    setLocalProgress('Downloading the local AI model. The first run can take a while; later runs use the browser cache.');
+    enginePromiseRef.current = import('@mlc-ai/web-llm').then(async webllm => {
+      const engine = await webllm.CreateMLCEngine(LOCAL_MODEL_ID, {
+        initProgressCallback: (report: { text?: string; progress?: number }) => {
+          const progress = typeof report.progress === 'number' ? ` ${Math.round(report.progress * 100)}%` : '';
+          setLocalProgress(`${report.text || 'Loading local AI…'}${progress}`);
+        },
+        logLevel: 'ERROR',
+      }, {
+        context_window_size: 4096,
+      });
+      engineRef.current = engine;
+      setLocalStatus('ready');
+      setLocalProgress('Local AI is ready.');
+      return engine;
+    }).catch(error => {
+      enginePromiseRef.current = null;
+      setLocalStatus('error');
+      setLocalProgress(error instanceof Error ? error.message : 'Local AI could not start.');
+      throw error;
+    });
+    return enginePromiseRef.current;
+  }
+
+  function localSseStream(body: string, original: typeof window.fetch, input: RequestInfo | URL, init?: RequestInit): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        try {
+          const payload = JSON.parse(body) as { message?: string; history?: ChatMessage[]; images?: unknown[] };
+          const history = Array.isArray(payload.history) ? payload.history : [];
+          const messages: ChatMessage[] = [
+            { role: 'system', content: 'You are Dosthai, a helpful, concise AI assistant. Answer clearly, accurately, and use markdown when useful. Do not claim access to tools, files, websites, or live information unless the user actually supplied them.' },
+            ...history.slice(-24).filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map(item => ({ role: item.role, content: item.content.slice(0, 16000) })),
+            { role: 'user', content: String(payload.message || '') },
+          ];
+          if (Array.isArray(payload.images) && payload.images.length) {
+            send('error', { error: 'The browser-local model currently supports text chat. Remove the image or configure a vision-capable server model.' });
+            controller.close();
+            return;
+          }
+          send('ready', { message: localStatusMessage() });
+          const engine = await getLocalEngine();
+          const response = await engine.chat.completions.create({
+            messages,
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: 1024,
+            stream: true,
+          });
+          for await (const chunk of response) {
+            const token = chunk?.choices?.[0]?.delta?.content || '';
+            if (token) send('token', { token });
+          }
+          send('done', { model: LOCAL_MODEL_ID, local: true });
+          controller.close();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Local AI request failed.';
+          setLocalStatus('error');
+          setLocalProgress(message);
+          send('error', { error: message });
+          controller.close();
+        }
+      },
+      cancel() {
+        // WebLLM owns the active generation; the page can still stop rendering immediately.
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-dosthai-model': LOCAL_MODEL_ID,
+        'x-dosthai-local-mode': 'true',
+      },
+    });
+  }
+
+  function localStatusMessage() {
+    if (localStatus === 'loading') return 'Loading your private browser-local AI…';
+    if (localStatus === 'ready') return 'Using your private browser-local AI.';
+    return 'Starting browser-local AI…';
+  }
 
   useEffect(() => {
     const input = document.querySelector<HTMLInputElement>('input[type="file"][accept*=".txt"]');
@@ -55,14 +162,19 @@ export default function DosthaiEnhancements() {
     originalFetchRef.current = original;
     window.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : input.url;
-      if (url.endsWith('/api/chat') && init?.body && pendingImageRef.current) {
+      if (url.endsWith('/api/chat') && init?.body) {
         try {
           const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
           if (body && typeof body === 'object') {
-            body.images = [{ dataUrl: pendingImageRef.current, detail: 'auto' }];
+            if (pendingImageRef.current) {
+              body.images = [{ dataUrl: pendingImageRef.current, detail: 'auto' }];
+              pendingImageRef.current = null;
+              setImageAttached(false);
+            }
+            if (body.model === 'dosthai-local' && !Array.isArray(body.images)) {
+              return localSseStream(JSON.stringify(body), original, input, init);
+            }
             init = { ...init, body: JSON.stringify(body) };
-            pendingImageRef.current = null;
-            setImageAttached(false);
           }
         } catch {}
       }
@@ -72,7 +184,7 @@ export default function DosthaiEnhancements() {
       if (originalFetchRef.current === original) window.fetch = original;
       originalFetchRef.current = null;
     };
-  }, []);
+  }, [localStatus]);
 
   useEffect(() => {
     const addSpeechButtons = () => {
@@ -116,10 +228,26 @@ export default function DosthaiEnhancements() {
     return () => observer.disconnect();
   }, []);
 
-  return imageAttached ? (
-    <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}>
-      <span>🖼️ Image ready for the next message</span>
-      <button type="button" onClick={() => { pendingImageRef.current = null; setImageAttached(false); }} style={{ border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer' }}>×</button>
+  if (imageAttached) {
+    return (
+      <>
+        <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}>
+          <span>🖼️ Image ready for the next message</span>
+          <button type="button" onClick={() => { pendingImageRef.current = null; setImageAttached(false); }} style={{ border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer' }}>×</button>
+        </div>
+        {speaking ? <div style={{ position: 'fixed', right: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div> : null}
+      </>
+    );
+  }
+
+  if (speaking) {
+    return <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div>;
+  }
+
+  return localStatus !== 'idle' ? (
+    <div style={{ position: 'fixed', left: 20, bottom: 20, zIndex: 50, maxWidth: 'min(520px, calc(100vw - 40px))', padding: '10px 14px', borderRadius: 14, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}>
+      <strong>🧠 Dosthai Local AI</strong>
+      <div style={{ marginTop: 4, opacity: .8 }}>{localProgress}</div>
     </div>
-  ) : speaking ? <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div> : null;
+  ) : null;
 }
