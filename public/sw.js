@@ -1,4 +1,4 @@
-const CACHE = 'dosthai-shell-v3';
+const CACHE = 'dosthai-shell-v4';
 const APP_SHELL = ['/', '/offline.html', '/manifest.webmanifest', '/icon.svg'];
 const BOOTSTRAP_APIS = ['/api/models', '/api/capabilities', '/api/health'];
 
@@ -19,11 +19,12 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))
-      .then(() => self.clients.claim())
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)));
+    if ('navigationPreload' in self.registration) await self.registration.navigationPreload.enable();
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener('fetch', event => {
@@ -48,11 +49,26 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // App/static assets use network-first so new releases are picked up quickly,
+  // Navigation uses a preload response when available, avoiding an extra service
+  // worker startup hop while still keeping the previous shell as an offline fallback.
+  if (request.mode === 'navigate') {
+    event.respondWith((async () => {
+      try {
+        const preload = await event.preloadResponse;
+        const response = preload || await fetch(request);
+        return cacheResponse(request, response);
+      } catch {
+        return await caches.match(request) || await caches.match('/offline.html') || new Response('Offline', { status: 503 });
+      }
+    })());
+    return;
+  }
+
+  // Static assets use network-first so new releases are picked up quickly,
   // with the previous shell retained for offline use.
   event.respondWith(
     fetch(request).then(response => {
-      if (response.ok && (request.mode === 'navigate' || request.destination === 'script' || request.destination === 'style' || request.destination === 'image' || request.destination === 'font')) {
+      if (response.ok && (request.destination === 'script' || request.destination === 'style' || request.destination === 'image' || request.destination === 'font')) {
         return cacheResponse(request, response);
       }
       return response;
