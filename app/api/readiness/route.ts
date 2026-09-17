@@ -33,6 +33,8 @@ export async function GET() {
     checks,
     blockers: [],
     optionalIntegrations: optional,
-    note: provider ? 'A configured model provider is active.' : 'Dosthai runs without API credentials in transparent local mode. Local mode does not pretend to be a large language model; connect a provider when full generative AI is required.'
+    note: provider
+      ? 'A configured model provider is active.'
+      : 'Dosthai runs without API credentials in transparent local mode. Local mode does not pretend to be a large language model; connect a provider when full generative AI is required. Missing optional integrations are reported explicitly.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
