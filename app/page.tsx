@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 type Source = { title?: string; url: string; snippet?: string };
-type Message = { role: 'user' | 'assistant'; content: string; createdAt?: number; sources?: Source[]; feedback?: 'up' | 'down' | null };
+type Message = { role: 'user' | 'assistant'; content: string; createdAt?: number; sources?: Source[]; feedback?: 'up' | 'down' | null; image?: string };
 type Conversation = { id: string; title: string; messages: Message[]; updatedAt: number; pinned?: boolean; archived?: boolean };
 type Model = { id: string; name: string; hint: string };
 
@@ -13,11 +13,12 @@ const suggestions = [
   ['✍️', 'Write something', 'Write a professional email'],
   ['🧠', 'Think through a problem', 'Help me make a project plan'],
   ['🔎', 'Research a topic', 'Compare PostgreSQL and MongoDB for a new app'],
-  ['📋', 'Analyze data', 'Create a practical analysis plan for this dataset']
+  ['📋', 'Analyze data', 'Create a practical analysis plan for this dataset'],
+  ['🎨', 'Create an image', '/image A cinematic futuristic city at sunset']
 ];
 const fallbackModels: Model[] = [{ id: '', name: 'Dosthai', hint: 'Configure a server AI model to start chatting' }];
 function makeId() { return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
-function titleFor(text: string) { return text.trim().replace(/\s+/g, ' ').slice(0, 42) || 'New conversation'; }
+function titleFor(text: string) { return text.trim().replace(/\s+/g, ' ').replace(/^\/image\s+/i, '').slice(0, 42) || 'New conversation'; }
 
 function renderContent(text: string) {
   return text.split(/(```[\s\S]*?```)/g).map((part, i) => {
@@ -68,15 +69,26 @@ export default function Home() {
     fetch('/api/models', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(data => { const list = Array.isArray(data?.models) ? data.models.filter((m: Model) => m?.id) : []; if (list.length) { setModels(list); setSelectedModel(current => list.find((m: Model) => m.id === current.id) || list[0]); } }).catch(() => undefined);
     fetch('/api/capabilities', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(data => setCapabilities(data?.capabilities || {})).catch(() => undefined);
   }, []);
-  useEffect(() => { localStorage.setItem('dosthai-conversations', JSON.stringify(conversations)); }, [conversations]);
+  useEffect(() => { try { localStorage.setItem('dosthai-conversations', JSON.stringify(conversations)); } catch { notify('Local storage is full. Large generated images are kept for the current session only.'); } }, [conversations]);
   useEffect(() => { if (selectedModel.id) localStorage.setItem('dosthai-model', selectedModel.id); }, [selectedModel]);
   useEffect(() => { localStorage.setItem('dosthai-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => () => { if (saveTimer.current) window.clearTimeout(saveTimer.current); }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' }); }, [messages, busy]);
   useEffect(() => { if (!busy) requestAnimationFrame(() => composerRef.current?.focus()); }, [busy]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); newChat(); }
+      if (mod && e.key.toLowerCase() === 'f') { e.preventDefault(); setSearchOpen(true); requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.search-box input')?.focus()); }
+      if (e.key === 'Escape') { setMenuOpen(false); setModelOpen(false); setSettingsOpen(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   const notify = (text: string) => { setNotice(text); window.setTimeout(() => setNotice(''), 2600); };
-  function saveCurrent(next: Message[], id = conversationId) { if (!id || !next.length) return; setConversations(items => items.map(c => c.id === id ? { ...c, title: c.title === 'New conversation' ? titleFor(next[0].content) : c.title, messages: next, updatedAt: Date.now() } : c)); }
+  function persistableMessages(next: Message[]): Message[] { return next.map(m => m.image?.startsWith('data:') ? { ...m, image: undefined } : m); }
+  function saveCurrent(next: Message[], id = conversationId) { if (!id || !next.length) return; const saved = persistableMessages(next); setConversations(items => items.map(c => c.id === id ? { ...c, title: c.title === 'New conversation' ? titleFor(next[0].content) : c.title, messages: saved, updatedAt: Date.now() } : c)); }
   function scheduleSave(next: Message[], id: string, immediate = false) { if (saveTimer.current) window.clearTimeout(saveTimer.current); saveTimer.current = null; if (immediate) { saveCurrent(next, id); return; } saveTimer.current = window.setTimeout(() => { saveTimer.current = null; saveCurrent(next, id); }, 400); }
   function parseEvent(event: string, token: (s: string) => void, error: (s: string) => void, status?: (s: string) => void, meta?: (x: any) => void) {
     let type = 'message'; const lines: string[] = [];
@@ -95,8 +107,28 @@ export default function Home() {
     const final = base.concat({ role: 'assistant', content: answer || (agent ? 'The agent returned an empty response.' : 'The model returned an empty response.'), createdAt: Date.now(), sources: sources.length ? sources : undefined });
     setMessages(final); scheduleSave(final, id, true);
   }
+  async function generateImage(prompt: string) {
+    const clean = prompt.replace(/^\/image\s*/i, '').trim();
+    if (!clean) { notify('Use /image followed by a description.'); return; }
+    const id = conversationId || makeId();
+    if (!conversationId) { setConversationId(id); setConversations(items => [{ id, title: titleFor(clean), messages: [], updatedAt: Date.now() }, ...items]); }
+    const base = [...messages, { role: 'user' as const, content: `/image ${clean}`, createdAt: Date.now() }];
+    setInput(''); setMessages([...base, { role: 'assistant', content: 'Creating your image…', createdAt: Date.now() }]); setBusy(true); setStatus('Creating image…');
+    const controller = new AbortController(); abortRef.current = controller;
+    try {
+      const response = await fetch('/api/image', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: clean }), signal: controller.signal });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.image) throw new Error(data?.error || 'Image generation failed.');
+      const final = base.concat({ role: 'assistant', content: 'Generated image', image: data.image, createdAt: Date.now() });
+      setMessages(final); scheduleSave(final, id, true);
+    } catch (e) {
+      const content = e instanceof DOMException && e.name === 'AbortError' ? 'Image generation stopped.' : `I couldn't create the image. ${e instanceof Error ? e.message : 'Request failed'}`;
+      const next = base.concat({ role: 'assistant', content, createdAt: Date.now() }); setMessages(next); scheduleSave(next, id, true);
+    } finally { abortRef.current = null; setBusy(false); setStatus(''); }
+  }
   async function send(value = input, historyOverride?: Message[]) {
     const text = value.trim(); if (!text || busy) return;
+    if (/^\/image\b/i.test(text)) { if (!capabilities.imageGeneration) return notify('Image generation is not configured on this server.'); await generateImage(text); return; }
     if (!selectedModel.id) { notify('AI is not configured yet. Add OPENAI_API_KEY and OPENAI_MODEL/DOSTHAI_MODELS on the server.'); return; }
     const history = historyOverride ?? messages; const id = conversationId || makeId();
     if (!conversationId) { setConversationId(id); setConversations(items => [{ id, title: titleFor(text), messages: [], updatedAt: Date.now() }, ...items]); }
@@ -145,11 +177,11 @@ export default function Home() {
         {menuOpen && <div className="menu"><button onClick={() => {share();setMenuOpen(false);}}>Share conversation</button><button onClick={() => {exportChat();setMenuOpen(false);}}>Export JSON</button><button onClick={() => importRef.current?.click()}>Import JSON</button><button onClick={() => setSettingsOpen(true)}>Settings</button><button onClick={() => {setDark(v => !v);setMenuOpen(false);}}>Switch to {dark ? 'light' : 'dark'} mode</button></div>}
       </header>
       {status && <div className="stream-status"><span className="status-dot"/>{status}</div>}
-      <div className="chat"><div className="center">{!messages.length ? <div className="hero"><div className="hero-icon">✦</div><h1>How can I help?</h1><p>Dosthai is your AI workspace for thinking, coding, writing, research, analysis, and everyday work.</p><div className="suggestions">{suggestions.map(([icon,title,prompt]) => <button key={prompt} onClick={() => send(prompt)}><span>{icon}</span><div><strong>{title}</strong><small>{prompt}</small></div><b>›</b></button>)}</div></div> : <div className="messages">{messages.map((m,i) => <article className={`message ${m.role}`} key={`${m.createdAt || i}-${i}`}><div className="role"><span className={m.role === 'assistant' ? 'ai-avatar' : 'user-avatar'}>{m.role === 'assistant' ? '✦' : 'N'}</span>{m.role === 'assistant' ? 'Dosthai' : 'You'}</div><div className="content">{m.content ? renderContent(m.content) : <span className="typing"><i/><i/><i/></span>}</div>{m.sources?.length ? <div className="source-cards"><div className="source-title">Sources</div>{m.sources.map((s,n) => <a className="source-card" href={s.url} target="_blank" rel="noreferrer" key={`${s.url}-${n}`}><strong>{s.title || s.url}</strong><span>{s.url}</span>{s.snippet && <small>{s.snippet}</small>}</a>)}</div> : null}{m.content && <div className="message-actions">{m.role === 'user' && !busy && <button onClick={() => editMessage(i)}>Edit</button>}{m.role === 'assistant' && <><button onClick={() => copyMessage(i,m.content)}>{copied === i ? 'Copied' : 'Copy'}</button><button onClick={() => regenerate(i)} disabled={busy}>Regenerate</button><button className={m.feedback === 'up' ? 'feedback-active' : ''} onClick={() => feedback(i,'up')}>👍</button><button className={m.feedback === 'down' ? 'feedback-active' : ''} onClick={() => feedback(i,'down')}>👎</button></>}</div>}</article>)}<div ref={endRef}/></div>}</div></div>
-      <div className="composer"><div className="composerbox"><button className="attach" onClick={() => fileRef.current?.click()} aria-label="Attach file">＋</button><textarea ref={composerRef} value={input} onChange={e => {setInput(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,180)}px`;}} onKeyDown={e => {if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}} placeholder={agentMode ? 'Ask Dosthai Agent…' : 'Message Dosthai…'} rows={1}/><button className={`voice ${listening ? 'active' : ''}`} onClick={voice} aria-label="Voice input">◉</button><button className={`send ${busy ? 'stop' : ''}`} onClick={busy ? stop : () => send()} disabled={!busy && !input.trim()}>{busy ? '■' : '↑'}</button></div><div className="composer-note">{agentMode ? 'Agent mode can use calculator and configured web research tools.' : 'Dosthai streams responses for fast feedback. Check important information.'}</div></div>
+      <div className="chat"><div className="center">{!messages.length ? <div className="hero"><div className="hero-icon">✦</div><h1>How can I help?</h1><p>Dosthai is your AI workspace for thinking, coding, writing, research, analysis, image creation, and everyday work.</p><div className="suggestions">{suggestions.map(([icon,title,prompt]) => <button key={prompt} onClick={() => send(prompt)}><span>{icon}</span><div><strong>{title}</strong><small>{prompt}</small></div><b>›</b></button>)}</div></div> : <div className="messages">{messages.map((m,i) => <article className={`message ${m.role}`} key={`${m.createdAt || i}-${i}`}><div className="role"><span className={m.role === 'assistant' ? 'ai-avatar' : 'user-avatar'}>{m.role === 'assistant' ? '✦' : 'N'}</span>{m.role === 'assistant' ? 'Dosthai' : 'You'}</div><div className="content">{m.image ? <div><img src={m.image} alt="Generated by Dosthai" style={{display:'block',maxWidth:'100%',width:'min(768px,100%)',borderRadius:16}}/><div className="message-actions"><button onClick={() => window.open(m.image, '_blank', 'noopener,noreferrer')}>Open image</button></div></div> : m.content ? renderContent(m.content) : <span className="typing"><i/><i/><i/></span>}</div>{m.sources?.length ? <div className="source-cards"><div className="source-title">Sources</div>{m.sources.map((s,n) => <a className="source-card" href={s.url} target="_blank" rel="noreferrer" key={`${s.url}-${n}`}><strong>{s.title || s.url}</strong><span>{s.url}</span>{s.snippet && <small>{s.snippet}</small>}</a>)}</div> : null}{m.content && !m.image && <div className="message-actions">{m.role === 'user' && !busy && <button onClick={() => editMessage(i)}>Edit</button>}{m.role === 'assistant' && <><button onClick={() => copyMessage(i,m.content)}>{copied === i ? 'Copied' : 'Copy'}</button><button onClick={() => regenerate(i)} disabled={busy}>Regenerate</button><button className={m.feedback === 'up' ? 'feedback-active' : ''} onClick={() => feedback(i,'up')}>👍</button><button className={m.feedback === 'down' ? 'feedback-active' : ''} onClick={() => feedback(i,'down')}>👎</button></>}</div>}</article>)}<div ref={endRef}/></div>}</div></div>
+      <div className="composer"><div className="composerbox"><button className="attach" onClick={() => fileRef.current?.click()} aria-label="Attach file">＋</button><textarea ref={composerRef} value={input} onChange={e => {setInput(e.target.value);e.currentTarget.style.height='auto';e.currentTarget.style.height=`${Math.min(e.currentTarget.scrollHeight,180)}px`;}} onKeyDown={e => {if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}} placeholder={agentMode ? 'Ask Dosthai Agent…' : 'Message Dosthai…'} rows={1}/><button className={`voice ${listening ? 'active' : ''}`} onClick={voice} aria-label="Voice input">◉</button><button className={`send ${busy ? 'stop' : ''}`} onClick={busy ? stop : () => send()} disabled={!busy && !input.trim()}>{busy ? '■' : '↑'}</button></div><div className="composer-note">{agentMode ? 'Agent mode can use calculator and configured web research tools.' : 'Streamed responses arrive progressively for fast feedback. Use /image to create an image when image generation is configured.'}</div></div>
     </section>
     <input ref={fileRef} hidden type="file" accept=".txt,.md,.csv,.json,.xml,.yaml,.yml,.js,.ts,.tsx,.jsx,.java,.py,.sql,.raml,.dw" onChange={e => {const f=e.target.files?.[0];if(f)attach(f);e.currentTarget.value='';}}/><input ref={importRef} hidden type="file" accept="application/json,.json" onChange={e => {const f=e.target.files?.[0];if(f)importChats(f);e.currentTarget.value='';}}/>
     {notice && <div className="toast">{notice}</div>}
-    {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><div className="settings-modal" onClick={e => e.stopPropagation()}><div className="modal-head"><h2>Dosthai settings</h2><button onClick={() => setSettingsOpen(false)}>×</button></div><div className="setting"><div><strong>Appearance</strong><small>Choose the interface theme.</small></div><div className="setting-actions"><button className="theme-toggle" onClick={() => setDark(true)}>Dark</button><button className="theme-toggle" onClick={() => setDark(false)}>Light</button></div></div><div className="setting"><div><strong>AI model</strong><small>{selectedModel.id ? `${selectedModel.name} · ${selectedModel.hint}` : 'No server model configured'}</small></div><button className="theme-toggle" onClick={() => {setSettingsOpen(false);setModelOpen(true);}}>Change</button></div><div className="setting"><div><strong>Agent mode</strong><small>Multi-step tool calling for calculator and configured research.</small></div><button className="theme-toggle" onClick={() => setAgentMode(v => !v)}>{agentMode ? 'On' : 'Off'}</button></div><div className="setting"><div><strong>Local privacy</strong><small>Browser conversation history is stored locally.</small></div><button className="theme-toggle" onClick={() => {localStorage.removeItem('dosthai-conversations');setConversations([]);notify('Local conversation history cleared.');}}>Clear</button></div><div className="settings-footer">Dosthai AI · local-first workspace · optional integrations activate only when configured on the server.</div></div></div>}
+    {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><div className="settings-modal" onClick={e => e.stopPropagation()}><div className="modal-head"><h2>Dosthai settings</h2><button onClick={() => setSettingsOpen(false)}>×</button></div><div className="setting"><div><strong>Appearance</strong><small>Choose the interface theme.</small></div><div className="setting-actions"><button className="theme-toggle" onClick={() => setDark(true)}>Dark</button><button className="theme-toggle" onClick={() => setDark(false)}>Light</button></div></div><div className="setting"><div><strong>AI model</strong><small>{selectedModel.id ? `${selectedModel.name} · ${selectedModel.hint}` : 'No server model configured'}</small></div><button className="theme-toggle" onClick={() => {setSettingsOpen(false);setModelOpen(true);}}>Change</button></div><div className="setting"><div><strong>Agent mode</strong><small>Multi-step tool calling for calculator and configured research.</small></div><button className="theme-toggle" onClick={() => setAgentMode(v => !v)}>{agentMode ? 'On' : 'Off'}</button></div><div className="setting"><div><strong>Image generation</strong><small>{capabilities.imageGeneration ? 'Available. Use /image followed by a prompt.' : 'Not configured on this server.'}</small></div></div><div className="setting"><div><strong>Local privacy</strong><small>Browser conversation history is stored locally.</small></div><button className="theme-toggle" onClick={() => {localStorage.removeItem('dosthai-conversations');setConversations([]);notify('Local conversation history cleared.');}}>Clear</button></div><div className="settings-footer">Dosthai AI · local-first workspace · optional integrations activate only when configured on the server.</div></div></div>}
   </main>;
 }
