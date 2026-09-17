@@ -1,15 +1,23 @@
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  const webResearch = Boolean(process.env.WEB_SEARCH_API_URL && process.env.WEB_SEARCH_API_KEY);
+  const cloudPersistence = Boolean(process.env.DATABASE_URL);
+  const authentication = Boolean(process.env.AUTH_SECRET);
+  const models = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
+  const provider = Boolean(process.env.OPENAI_API_KEY && models.length);
+
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.8.1',
+    version: '0.8.2',
     capabilities: {
-      streamingChat: true,
-      multipleModels: true,
-      modelFallback: true,
+      streamingChat: provider,
+      fastFirstTokenPath: provider,
+      multipleModels: models.length > 1,
+      modelFallback: models.length > 1,
       conversationSearch: true,
       localHistory: true,
       importExport: true,
@@ -20,11 +28,11 @@ export async function GET() {
       shareLinks: true,
       toolRegistry: true,
       calculatorTool: true,
-      agentOrchestration: true,
-      multiStepToolCalling: true,
-      webResearch: Boolean(process.env.WEB_SEARCH_API_URL && process.env.WEB_SEARCH_API_KEY),
-      cloudPersistence: Boolean(process.env.DATABASE_URL),
-      authentication: Boolean(process.env.AUTH_SECRET),
+      agentOrchestration: provider,
+      multiStepToolCalling: provider,
+      webResearch,
+      cloudPersistence,
+      authentication,
       objectStorage: Boolean(process.env.STORAGE_BUCKET),
       codeExecution: Boolean(process.env.CODE_EXECUTION_ENABLED),
       rag: Boolean(process.env.VECTOR_DATABASE_URL),
@@ -33,6 +41,7 @@ export async function GET() {
       githubIntegration: Boolean(process.env.GITHUB_APP_ID || process.env.GITHUB_TOKEN),
       productionSecurityHeaders: true
     },
+    configured: { provider, models: models.length, webResearch, cloudPersistence, authentication },
     next: [
       'Authenticated cloud conversations with account isolation',
       'Real web research with citations and source controls',
