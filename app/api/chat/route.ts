@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic';
 const SYSTEM_PROMPT = `You are Dosthai AI, a general-purpose AI assistant built for serious everyday and professional work. Be accurate, clear, practical, and honest about uncertainty. Think carefully before answering. Prefer structured answers when useful. For code, provide complete usable examples and call out important assumptions. Never claim to have browsed the web, run code, changed a repository, accessed a private account, or completed an external action unless the application actually supplied that tool result.`;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 30;
+const MAX_RATE_BUCKETS = 10_000;
 const MAX_HISTORY = 24;
 const MAX_HISTORY_ITEM = 16_000;
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -29,6 +30,12 @@ function rateLimited(key: string) {
   const now = Date.now();
   const current = rateBuckets.get(key);
   if (!current || current.resetAt <= now) {
+    if (rateBuckets.size >= MAX_RATE_BUCKETS) {
+      for (const [bucketKey, bucket] of rateBuckets) {
+        if (bucket.resetAt <= now) rateBuckets.delete(bucketKey);
+      }
+      if (rateBuckets.size >= MAX_RATE_BUCKETS) rateBuckets.delete(rateBuckets.keys().next().value as string);
+    }
     rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return false;
   }
@@ -103,8 +110,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           model,
           messages,
-          stream: true,
-          stream_options: { include_usage: true }
+          stream: true
         }),
         cache: 'no-store',
         signal: controller.signal
