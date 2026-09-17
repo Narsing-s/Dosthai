@@ -13,56 +13,35 @@ export async function GET() {
   const imageModel = process.env.IMAGE_MODEL?.trim() || 'gpt-image-2';
   const speech = Boolean(process.env.SPEECH_API_KEY || process.env.OPENAI_API_KEY);
   const adaptiveReasoning = provider && models.some(model => /^(gpt-(?:5\.6|6)|o[1-9])(?:-|$)/i.test(model));
-  const multimodalChat = provider;
 
   return NextResponse.json({
-    app: 'Dosthai AI',
-    version: '0.8.7',
+    app: 'Dosthai AI', version: '0.8.8',
     capabilities: {
-      streamingChat: provider,
-      fastFirstTokenPath: provider,
-      adaptiveReasoning,
-      multimodalChat,
-      multipleModels: models.length > 1,
-      modelFallback: models.length > 1,
-      conversationSearch: true,
-      localHistory: true,
-      importExport: true,
-      localProjects: true,
-      localMemoryControls: true,
-      voiceInput: true,
-      textToSpeech: speech,
-      fileContext: true,
-      shareLinks: true,
-      toolRegistry: true,
-      calculatorTool: true,
-      structuredJsonTool: true,
-      agentOrchestration: provider,
-      multiStepToolCalling: provider,
-      webResearch,
-      cloudPersistence,
-      authentication,
-      objectStorage: Boolean(process.env.STORAGE_BUCKET),
-      codeExecution: Boolean(process.env.CODE_EXECUTION_ENABLED),
-      rag: Boolean(process.env.VECTOR_DATABASE_URL),
-      imageGeneration,
-      imageModelConfigured: imageGeneration,
-      speech,
-      githubIntegration: Boolean(process.env.GITHUB_APP_ID || process.env.GITHUB_TOKEN),
-      offlineAppShell: true,
-      installableWebApp: true,
-      productionSecurityHeaders: true
+      streamingChat: true, fastFirstTokenPath: true, localAiMode: true,
+      adaptiveReasoning, multimodalChat: provider, multipleModels: models.length > 1,
+      modelFallback: models.length > 1, conversationSearch: true, localHistory: true,
+      importExport: true, localProjects: true, localMemoryControls: true, voiceInput: true,
+      textToSpeech: speech, fileContext: true, shareLinks: true, toolRegistry: true,
+      calculatorTool: true, structuredJsonTool: true, agentOrchestration: provider,
+      multiStepToolCalling: provider, webResearch, cloudPersistence, authentication,
+      objectStorage: Boolean(process.env.STORAGE_BUCKET), codeExecution: Boolean(process.env.CODE_EXECUTION_ENABLED),
+      rag: Boolean(process.env.VECTOR_DATABASE_URL), imageGeneration, imageModelConfigured: imageGeneration,
+      speech, githubIntegration: Boolean(process.env.GITHUB_APP_ID || process.env.GITHUB_TOKEN),
+      offlineAppShell: true, installableWebApp: true, productionSecurityHeaders: true
     },
-    configured: { provider, models: models.length, webResearch, cloudPersistence, authentication, imageGeneration, imageModel, speech, adaptiveReasoning, multimodalChat },
-    next: [
+    configured: { provider, localAiMode: true, models: models.length, webResearch, cloudPersistence, authentication, imageGeneration, imageModel, speech, adaptiveReasoning },
+    next: provider ? [
       'Authenticated cloud conversations with account isolation',
       'Real web research with citations and source controls',
       'PDF, DOCX, spreadsheet and image ingestion with permission-aware RAG',
       'Expanded native tool calling and multi-step agent orchestration',
       'Sandboxed code execution with resource limits',
-      'Multimodal image, audio and generated-file workflows',
-      'GitHub and developer workflows with explicit authorization',
       'Long-running resumable agents, background jobs and observability'
+    ] : [
+      'Connect a model inference service for full generative AI',
+      'Authenticated cloud conversations with account isolation',
+      'Real web research with citations and source controls',
+      'Expanded native tool calling and multi-step agent orchestration'
     ]
   }, { headers: { 'cache-control': 'no-store' } });
 }
