@@ -70,6 +70,33 @@ const tools = [
   { type: 'function', function: { name: 'web_research', description: 'Search current public information and return source metadata. Use when current or externally verifiable information is required.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } } }
 ];
 
+type ParsedToolCall = { raw: unknown; name: string; args: Record<string, unknown>; callId: string };
+
+function parseToolCall(rawCall: unknown): ParsedToolCall {
+  const call = rawCall && typeof rawCall === 'object' ? rawCall as Record<string, unknown> : {};
+  const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : {};
+  const name = typeof fn.name === 'string' ? fn.name : 'unknown';
+  let args: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(typeof fn.arguments === 'string' ? fn.arguments : '{}');
+    if (parsed && typeof parsed === 'object') args = parsed as Record<string, unknown>;
+  } catch { /* invalid tool arguments are handled as empty arguments */ }
+  return { raw: rawCall, name, args, callId: typeof call.id === 'string' ? call.id : '' };
+}
+
+async function executeTool(call: ParsedToolCall, signal?: AbortSignal): Promise<AgentToolResult & { sourceResults: AgentSource[] }> {
+  try {
+    if (call.name === 'calculator') return { name: call.name, output: { value: calculator(String(call.args.expression || '')) }, sourceResults: [] };
+    if (call.name === 'web_research') {
+      const found = await webResearch(String(call.args.query || ''), signal);
+      return { name: call.name, output: { results: found }, sourceResults: found };
+    }
+    return { name: call.name, output: { error: 'Unknown tool.' }, sourceResults: [] };
+  } catch (error) {
+    return { name: call.name, output: { error: error instanceof Error ? error.message : 'Tool execution failed.' }, sourceResults: [] };
+  }
+}
+
 export async function runAgent(input: { message: string; history?: Array<{ role: 'user' | 'assistant'; content: string }>; model?: string; signal?: AbortSignal }): Promise<AgentRunResult> {
   const message = input.message.trim();
   if (!message) throw new Error('Message is required.');
@@ -102,17 +129,15 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
         const rawToolCalls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls.slice(0, MAX_TOOL_CALLS_PER_STEP) : [];
         messages.push({ role: 'assistant', content: typeof assistant.content === 'string' ? assistant.content : null, ...(rawToolCalls.length ? { tool_calls: rawToolCalls } : {}) });
         if (!rawToolCalls.length) return { answer: typeof assistant.content === 'string' ? assistant.content : '', model, steps: step + 1, sources, toolResults };
-        for (const rawCall of rawToolCalls) {
-          const call = rawCall && typeof rawCall === 'object' ? rawCall as Record<string, unknown> : {};
-          const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : {};
-          const name = typeof fn.name === 'string' ? fn.name : 'unknown';
-          let args: Record<string, unknown> = {};
-          try { const parsed: unknown = JSON.parse(typeof fn.arguments === 'string' ? fn.arguments : '{}'); if (parsed && typeof parsed === 'object') args = parsed as Record<string, unknown>; } catch { args = {}; }
-          let result: unknown;
-          try { if (name === 'calculator') result = { value: calculator(String(args.expression || '')) }; else if (name === 'web_research') { const found = await webResearch(String(args.query || ''), input.signal); sources.push(...found); result = { results: found }; } else result = { error: 'Unknown tool.' }; } catch (error) { result = { error: error instanceof Error ? error.message : 'Tool execution failed.' }; }
-          toolResults.push({ name, output: result });
-          const callId = typeof call.id === 'string' ? call.id : '';
-          messages.push({ role: 'tool', tool_call_id: callId, content: JSON.stringify(result) });
+
+        // Independent tools are executed concurrently so a multi-tool step does not wait on each tool sequentially.
+        const parsedCalls = rawToolCalls.map(parseToolCall);
+        const results = await Promise.all(parsedCalls.map(call => executeTool(call, input.signal)));
+        for (let i = 0; i < results.length; i++) {
+          const result = results[i];
+          toolResults.push({ name: result.name, output: result.output });
+          for (const source of result.sourceResults) if (!sources.some(existing => existing.url === source.url)) sources.push(source);
+          messages.push({ role: 'tool', tool_call_id: parsedCalls[i].callId, content: JSON.stringify(result.output) });
         }
       }
       throw new Error('Agent reached its maximum tool steps without completing the task.');
