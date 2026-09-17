@@ -13,6 +13,9 @@ type ProviderMessage = {
 const MAX_STEPS = 4;
 const MAX_TOOL_CALLS_PER_STEP = 4;
 const MAX_RESULTS = 8;
+const MAX_HISTORY = 20;
+const MAX_HISTORY_ITEM = 12_000;
+const MAX_HISTORY_CHARS = 60_000;
 const REQUEST_TIMEOUT_MS = 45_000;
 
 function allowedModels() {
@@ -28,6 +31,21 @@ function withTimeout<T>(promise: Promise<T>, signal?: AbortSignal, timeoutMs = R
     signal?.addEventListener('abort', onAbort, { once: true });
     promise.then(value => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(value); }, error => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(error); });
   });
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const timeoutController = new AbortController();
+  const parentSignal = init.signal;
+  const abort = () => timeoutController.abort();
+  if (parentSignal?.aborted) timeoutController.abort();
+  else parentSignal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: timeoutController.signal });
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', abort);
+  }
 }
 
 function calculator(expression: string): number {
@@ -54,7 +72,7 @@ async function webResearch(query: string, signal?: AbortSignal): Promise<AgentSo
   const key = process.env.WEB_SEARCH_API_KEY;
   if (!endpoint || !key) throw new Error('Web research is not configured.');
   if (!query.trim() || query.length > 2000) throw new Error('Research query is invalid.');
-  const response = await withTimeout(fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ query: query.trim(), num_results: MAX_RESULTS }), cache: 'no-store', signal }), signal);
+  const response = await fetchWithTimeout(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ query: query.trim(), num_results: MAX_RESULTS }), cache: 'no-store', signal }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error(`Research provider returned HTTP ${response.status}.`);
   const data: unknown = await response.json();
   const object = data && typeof data === 'object' ? data as Record<string, unknown> : {};
@@ -113,7 +131,13 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
   const preferred = requested && models.includes(requested) ? requested : models[0];
   const orderedModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const history = (input.history || []).slice(-20).filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map(item => ({ role: item.role, content: item.content.slice(0, 12_000) }));
+  let historyChars = 0;
+  const history = (input.history || []).slice(-MAX_HISTORY).filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').reverse().flatMap(item => {
+    const content = item.content.slice(0, MAX_HISTORY_ITEM);
+    if (historyChars + content.length > MAX_HISTORY_CHARS) return [];
+    historyChars += content.length;
+    return [{ role: item.role, content }];
+  }).reverse();
 
   let lastError: unknown;
   for (let modelIndex = 0; modelIndex < orderedModels.length; modelIndex++) {
@@ -123,7 +147,7 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
       const sources: AgentSource[] = [];
       const toolResults: AgentToolResult[] = [];
       for (let step = 0; step < MAX_STEPS; step++) {
-        const response = await withTimeout(fetch(`${baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, temperature: 0.2 }), cache: 'no-store', signal: input.signal }), input.signal);
+        const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, temperature: 0.2 }), cache: 'no-store', signal: input.signal }, REQUEST_TIMEOUT_MS);
         if (!response.ok) {
           const status = response.status;
           throw Object.assign(new Error(`AI provider returned HTTP ${status}.`), { retryable: isRetryableProviderStatus(status) });
