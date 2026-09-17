@@ -1,0 +1,14 @@
+{
+  "name": "Dosthai AI",
+  "short_name": "Dosthai",
+  "description": "A fast personal AI workspace for chat, coding, research, writing and analysis.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090b10",
+  "theme_color": "#090b10",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
