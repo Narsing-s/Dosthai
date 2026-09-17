@@ -1,5 +1,5 @@
-const CACHE = 'dosthai-shell-v4';
-const APP_SHELL = ['/', '/offline.html', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'dosthai-shell-v5';
+const APP_SHELL = ['/', '/offline.html', '/icon.svg'];
 const BOOTSTRAP_APIS = ['/api/models', '/api/capabilities', '/api/health'];
 
 async function cacheResponse(request, response) {
@@ -36,11 +36,13 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
 
-  // Never cache chat/agent streams or other mutable application APIs.
+  // Do not cache the manifest. Vercel deployment protection can redirect it to
+  // the Vercel SSO endpoint, which must never be stored as an app-shell asset.
+  if (url.pathname === '/manifest.webmanifest') return;
+
+  // Never cache chat/agent streams or mutable application APIs.
   if (url.pathname.startsWith('/api/') && !BOOTSTRAP_APIS.includes(url.pathname)) return;
 
-  // Bootstrap data uses stale-while-revalidate: cached data appears immediately,
-  // while the newest server response refreshes the cache in the background.
   if (BOOTSTRAP_APIS.includes(url.pathname)) {
     event.respondWith((async () => {
       const cached = await caches.match(request);
@@ -53,8 +55,6 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Navigation uses a preload response when available, avoiding an extra service
-  // worker startup hop while still keeping the previous shell as an offline fallback.
   if (request.mode === 'navigate') {
     event.respondWith((async () => {
       try {
@@ -68,8 +68,6 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Static assets use network-first so new releases are picked up quickly,
-  // with the previous shell retained for offline use.
   event.respondWith(
     fetch(request).then(response => {
       if (response.ok && (request.destination === 'script' || request.destination === 'style' || request.destination === 'image' || request.destination === 'font')) {
