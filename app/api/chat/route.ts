@@ -21,6 +21,8 @@ const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 type ImageInput = { dataUrl: string; detail?: 'low' | 'high' | 'auto' };
+type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+type ServiceTier = 'auto' | 'default' | 'flex' | 'priority' | 'fast' | 'ultrafast';
 
 function allowedModels() { return [...new Set((process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(value => value.trim()).filter(Boolean))]; }
 function clientKey(request: Request) { return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || request.headers.get('x-real-ip') || 'anonymous'; }
@@ -28,12 +30,17 @@ function rateLimited(key: string) { const now = Date.now(); const current = rate
 function shouldFallback(status: number) { return status === 408 || status === 409 || status === 429 || status >= 500; }
 function compactHistory(history: any[]): ChatMessage[] { const normalized = history.slice(-MAX_HISTORY).filter((item: any) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map((item: any) => ({ role: item.role, content: item.content.slice(0, MAX_HISTORY_ITEM) })); let total = 0; const kept: ChatMessage[] = []; for (let index = normalized.length - 1; index >= 0; index -= 1) { const item = normalized[index]; if (total + item.content.length > MAX_HISTORY_CHARS && kept.length > 0) break; if (total + item.content.length > MAX_HISTORY_CHARS) { kept.unshift({ role: item.role, content: item.content.slice(-MAX_HISTORY_CHARS) }); break; } kept.unshift(item); total += item.content.length; } return kept; }
 function isReasoningModel(model: string) { return /^(gpt-(?:5\.6|6)|o[1-9])(?:-|$)/i.test(model); }
-function reasoningEffort(message: string, model: string): 'none' | 'low' | 'medium' | 'high' | undefined {
+function reasoningEffort(message: string, model: string): ReasoningEffort | undefined {
   if (!isReasoningModel(model)) return undefined;
   const configured = (process.env.DOSTHAI_REASONING_EFFORT || '').trim().toLowerCase();
-  if (['none', 'low', 'medium', 'high'].includes(configured)) return configured as 'none' | 'low' | 'medium' | 'high';
+  if (['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(configured)) return configured as ReasoningEffort;
   const complex = message.length > 1200 || /\b(debug|architecture|design|compare|analy[sz]e|reason|proof|optimi[sz]e|refactor|root cause|trade-?off|step[- ]by[- ]step)\b/i.test(message);
   return complex ? 'medium' : 'low';
+}
+function serviceTier(): ServiceTier | undefined {
+  const configured = (process.env.DOSTHAI_SERVICE_TIER || '').trim().toLowerCase();
+  if (['auto', 'default', 'flex', 'priority', 'fast', 'ultrafast'].includes(configured)) return configured as ServiceTier;
+  return undefined;
 }
 function providerHeaders(apiKey: string) { return { 'content-type': 'application/json', authorization: `Bearer ${apiKey}`, accept: 'text/event-stream' }; }
 async function fetchProvider(url: string, init: RequestInit, timeoutMs: number) { const timeoutController = new AbortController(); const parentSignal = init.signal; const onParentAbort = () => timeoutController.abort(); if (parentSignal?.aborted) timeoutController.abort(); else parentSignal?.addEventListener('abort', onParentAbort, { once: true }); const timer = setTimeout(() => timeoutController.abort(), timeoutMs); try { return await fetch(url, { ...init, signal: timeoutController.signal }); } finally { clearTimeout(timer); parentSignal?.removeEventListener('abort', onParentAbort); } }
@@ -64,7 +71,6 @@ export async function POST(request: Request) {
   const fallbackModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
   const inputHistory = compactHistory(history).map(item => ({ role: item.role, content: item.content }));
   const userContent: Array<{ type: 'input_text' | 'input_image'; text?: string; image_url?: string; detail?: string }> = [{ type: 'input_text', text: message }, ...images.map(image => ({ type: 'input_image' as const, image_url: image.dataUrl, detail: image.detail }))];
-  let lastDetail = 'Provider request failed';
   for (const model of fallbackModels) {
     if (request.signal.aborted) return new Response(null, { status: 499 });
     const controller = new AbortController();
@@ -73,14 +79,18 @@ export async function POST(request: Request) {
     let returnedStream = false;
     try {
       const effort = reasoningEffort(message, model);
+      const tier = serviceTier();
       const payload: any = { model, instructions: contextualInstructions, input: [...inputHistory, { role: 'user', content: userContent }], stream: true, store: false, text: { verbosity: 'medium' }, parallel_tool_calls: true };
       if (effort) payload.reasoning = { effort };
+      if (tier) payload.service_tier = tier;
+      if (/^(gpt-5\.6|gpt-6)(?:-|$)/i.test(model)) payload.prompt_cache_key = 'dosthai-system-v1';
       const upstream = await fetchProvider(`${baseUrl}/responses`, { method: 'POST', headers: providerHeaders(apiKey), body: JSON.stringify(payload), cache: 'no-store', signal: controller.signal }, PROVIDER_CONNECT_TIMEOUT_MS);
       if (upstream.ok && upstream.body) {
         returnedStream = true;
-        return new Response(streamResponses(upstream.body, controller, request.signal, requestId, startedAt), { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no', 'x-dosthai-model': model, 'x-dosthai-reasoning': effort || 'default', 'x-dosthai-request-id': requestId } });
+        return new Response(streamResponses(upstream.body, controller, request.signal, requestId, startedAt), { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no', 'x-dosthai-model': model, 'x-dosthai-reasoning': effort || 'default', 'x-dosthai-service-tier': tier || 'auto', 'x-dosthai-request-id': requestId } });
       }
-      lastDetail = (await upstream.text().catch(() => 'Provider request failed')).slice(0, 500);
+      const providerDetail = await upstream.text().catch(() => 'Provider request failed');
+      lastDetail = providerDetail.slice(0, 500);
       if (!shouldFallback(upstream.status)) break;
     } catch (error) {
       if (request.signal.aborted) return new Response(null, { status: 499 });
