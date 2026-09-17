@@ -12,13 +12,17 @@ export async function GET() {
   const imageGeneration = Boolean(process.env.IMAGE_API_KEY || process.env.OPENAI_API_KEY);
   const imageModel = process.env.IMAGE_MODEL?.trim() || 'gpt-image-2';
   const speech = Boolean(process.env.SPEECH_API_KEY || process.env.OPENAI_API_KEY);
+  const adaptiveReasoning = provider && models.some(model => /^(gpt-(?:5\.6|6)|o[1-9])(?:-|$)/i.test(model));
+  const multimodalChat = provider;
 
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.8.6',
+    version: '0.8.7',
     capabilities: {
       streamingChat: provider,
       fastFirstTokenPath: provider,
+      adaptiveReasoning,
+      multimodalChat,
       multipleModels: models.length > 1,
       modelFallback: models.length > 1,
       conversationSearch: true,
@@ -49,7 +53,7 @@ export async function GET() {
       installableWebApp: true,
       productionSecurityHeaders: true
     },
-    configured: { provider, models: models.length, webResearch, cloudPersistence, authentication, imageGeneration, imageModel, speech },
+    configured: { provider, models: models.length, webResearch, cloudPersistence, authentication, imageGeneration, imageModel, speech, adaptiveReasoning, multimodalChat },
     next: [
       'Authenticated cloud conversations with account isolation',
       'Real web research with citations and source controls',
