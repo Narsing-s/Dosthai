@@ -3,7 +3,12 @@ export type AgentToolResult = { name: string; output: unknown };
 export type AgentRunResult = { answer: string; model: string; steps: number; sources: AgentSource[]; toolResults: AgentToolResult[] };
 
 type ResearchRecord = Record<string, unknown>;
-type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string };
+type ProviderMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_call_id?: string;
+  tool_calls?: unknown[];
+};
 
 const MAX_STEPS = 4;
 const MAX_TOOL_CALLS_PER_STEP = 4;
@@ -82,7 +87,7 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
   let lastError: unknown;
   for (const model of orderedModels) {
     try {
-      const messages: ChatMessage[] = [{ role: 'system', content: 'You are Dosthai Agent. Complete the user task using available tools when useful. Never invent tool results. Use web_research for current or externally verifiable information and calculator for arithmetic. External or mutating actions are not available in this runtime. Return a concise, useful final answer and mention research sources when used.' }, ...history, { role: 'user', content: message }];
+      const messages: ProviderMessage[] = [{ role: 'system', content: 'You are Dosthai Agent. Complete the user task using available tools when useful. Never invent tool results. Use web_research for current or externally verifiable information and calculator for arithmetic. External or mutating actions are not available in this runtime. Return a concise, useful final answer and mention research sources when used.' }, ...history, { role: 'user', content: message }];
       const sources: AgentSource[] = [];
       const toolResults: AgentToolResult[] = [];
       for (let step = 0; step < MAX_STEPS; step++) {
@@ -94,10 +99,10 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
         const choice = choices[0] && typeof choices[0] === 'object' ? choices[0] as Record<string, unknown> : {};
         const assistant = choice.message && typeof choice.message === 'object' ? choice.message as Record<string, unknown> : null;
         if (!assistant) throw new Error('AI provider returned no message.');
-        messages.push({ role: 'assistant', content: typeof assistant.content === 'string' ? assistant.content : '' });
-        const calls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls.slice(0, MAX_TOOL_CALLS_PER_STEP) : [];
-        if (!calls.length) return { answer: typeof assistant.content === 'string' ? assistant.content : '', model, steps: step + 1, sources, toolResults };
-        for (const rawCall of calls) {
+        const rawToolCalls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls.slice(0, MAX_TOOL_CALLS_PER_STEP) : [];
+        messages.push({ role: 'assistant', content: typeof assistant.content === 'string' ? assistant.content : null, ...(rawToolCalls.length ? { tool_calls: rawToolCalls } : {}) });
+        if (!rawToolCalls.length) return { answer: typeof assistant.content === 'string' ? assistant.content : '', model, steps: step + 1, sources, toolResults };
+        for (const rawCall of rawToolCalls) {
           const call = rawCall && typeof rawCall === 'object' ? rawCall as Record<string, unknown> : {};
           const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : {};
           const name = typeof fn.name === 'string' ? fn.name : 'unknown';
@@ -106,7 +111,8 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
           let result: unknown;
           try { if (name === 'calculator') result = { value: calculator(String(args.expression || '')) }; else if (name === 'web_research') { const found = await webResearch(String(args.query || ''), input.signal); sources.push(...found); result = { results: found }; } else result = { error: 'Unknown tool.' }; } catch (error) { result = { error: error instanceof Error ? error.message : 'Tool execution failed.' }; }
           toolResults.push({ name, output: result });
-          messages.push({ role: 'tool', tool_call_id: typeof call.id === 'string' ? call.id : '', content: JSON.stringify(result) });
+          const callId = typeof call.id === 'string' ? call.id : '';
+          messages.push({ role: 'tool', tool_call_id: callId, content: JSON.stringify(result) });
         }
       }
       throw new Error('Agent reached its maximum tool steps without completing the task.');
