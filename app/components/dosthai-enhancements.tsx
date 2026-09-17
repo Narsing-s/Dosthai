@@ -56,7 +56,7 @@ export default function DosthaiEnhancements() {
     return enginePromiseRef.current;
   }
 
-  function localSseStream(body: string, original: typeof window.fetch, input: RequestInfo | URL, init?: RequestInit): Response {
+  function localSseStream(body: string): Response {
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const encoder = new TextEncoder();
@@ -161,7 +161,7 @@ export default function DosthaiEnhancements() {
     const original = window.fetch.bind(window);
     originalFetchRef.current = original;
     window.fetch = async (input, init) => {
-      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : input.url;
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString();
       if (url.endsWith('/api/chat') && init?.body) {
         try {
           const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
@@ -172,7 +172,7 @@ export default function DosthaiEnhancements() {
               setImageAttached(false);
             }
             if (body.model === 'dosthai-local' && !Array.isArray(body.images)) {
-              return localSseStream(JSON.stringify(body), original, input, init);
+              return localSseStream(JSON.stringify(body));
             }
             init = { ...init, body: JSON.stringify(body) };
           }
