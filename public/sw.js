@@ -1,5 +1,5 @@
-const CACHE = 'dosthai-shell-v1';
-const APP_SHELL = ['/','/manifest.webmanifest','/icon.svg'];
+const CACHE = 'dosthai-shell-v2';
+const APP_SHELL = ['/', '/offline.html', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
@@ -19,5 +19,5 @@ self.addEventListener('fetch', event => {
       caches.open(CACHE).then(cache => cache.put(request, copy));
     }
     return response;
-  }).catch(() => caches.match(request).then(cached => cached || caches.match('/'))));
+  }).catch(() => caches.match(request).then(cached => cached || caches.match('/offline.html'))));
 });
