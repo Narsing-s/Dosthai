@@ -71,6 +71,7 @@ export async function POST(request: Request) {
   const fallbackModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
   const inputHistory = compactHistory(history).map(item => ({ role: item.role, content: item.content }));
   const userContent: Array<{ type: 'input_text' | 'input_image'; text?: string; image_url?: string; detail?: string }> = [{ type: 'input_text', text: message }, ...images.map(image => ({ type: 'input_image' as const, image_url: image.dataUrl, detail: image.detail }))];
+  let lastDetail = 'Provider request failed';
   for (const model of fallbackModels) {
     if (request.signal.aborted) return new Response(null, { status: 499 });
     const controller = new AbortController();
