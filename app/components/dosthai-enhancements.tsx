@@ -18,6 +18,7 @@ export default function DosthaiEnhancements() {
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const engineRef = useRef<any>(null);
   const enginePromiseRef = useRef<Promise<any> | null>(null);
+  const workerRef = useRef<Worker | null>(null);
   const [imageAttached, setImageAttached] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [localStatus, setLocalStatus] = useState<LocalStatus>('idle');
@@ -34,7 +35,9 @@ export default function DosthaiEnhancements() {
     setLocalStatus('loading');
     setLocalProgress('Downloading the local AI model. The first run can take a while; later runs use the browser cache.');
     enginePromiseRef.current = import('@mlc-ai/web-llm').then(async webllm => {
-      const engine = await webllm.CreateMLCEngine(LOCAL_MODEL_ID, {
+      const worker = new Worker(new URL('../workers/dosthai-local-ai.worker.ts', import.meta.url), { type: 'module' });
+      workerRef.current = worker;
+      const engine = await webllm.CreateWebWorkerMLCEngine(worker, LOCAL_MODEL_ID, {
         initProgressCallback: (report: { text?: string; progress?: number }) => {
           const progress = typeof report.progress === 'number' ? ` ${Math.round(report.progress * 100)}%` : '';
           setLocalProgress(`${report.text || 'Loading local AI…'}${progress}`);
@@ -49,6 +52,8 @@ export default function DosthaiEnhancements() {
       return engine;
     }).catch(error => {
       enginePromiseRef.current = null;
+      workerRef.current?.terminate();
+      workerRef.current = null;
       setLocalStatus('error');
       setLocalProgress(error instanceof Error ? error.message : 'Local AI could not start.');
       throw error;
@@ -98,7 +103,7 @@ export default function DosthaiEnhancements() {
         }
       },
       cancel() {
-        // WebLLM owns the active generation; the page can still stop rendering immediately.
+        try { engineRef.current?.interruptGenerate?.(); } catch {}
       },
     });
     return new Response(stream, {
@@ -183,6 +188,11 @@ export default function DosthaiEnhancements() {
     return () => {
       if (originalFetchRef.current === original) window.fetch = original;
       originalFetchRef.current = null;
+      try { engineRef.current?.interruptGenerate?.(); } catch {}
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      engineRef.current = null;
+      enginePromiseRef.current = null;
     };
   }, [localStatus]);
 
@@ -202,11 +212,7 @@ export default function DosthaiEnhancements() {
           try {
             setSpeaking(true);
             audioRef.current?.pause();
-            const response = await fetch('/api/tts', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ text })
-            });
+            const response = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
             if (!response.ok) throw new Error('Speech request failed.');
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
@@ -215,9 +221,7 @@ export default function DosthaiEnhancements() {
             audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); };
             audio.onerror = () => { URL.revokeObjectURL(url); setSpeaking(false); };
             await audio.play();
-          } catch {
-            setSpeaking(false);
-          }
+          } catch { setSpeaking(false); }
         };
         actions.appendChild(button);
       });
@@ -240,9 +244,7 @@ export default function DosthaiEnhancements() {
     );
   }
 
-  if (speaking) {
-    return <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div>;
-  }
+  if (speaking) return <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div>;
 
   return localStatus !== 'idle' ? (
     <div style={{ position: 'fixed', left: 20, bottom: 20, zIndex: 50, maxWidth: 'min(520px, calc(100vw - 40px))', padding: '10px 14px', borderRadius: 14, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}>
