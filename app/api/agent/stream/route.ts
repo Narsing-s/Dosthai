@@ -1,4 +1,4 @@
-import { runAgent } from '../../../../lib/agent-runtime';
+import { runAgentStream } from '../../../../lib/agent-runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,14 +44,21 @@ function sse(event: string, data: unknown) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+const headers = {
+  'content-type': 'text/event-stream; charset=utf-8',
+  'cache-control': 'no-cache, no-store, must-revalidate',
+  connection: 'keep-alive',
+  'x-accel-buffering': 'no'
+};
+
 export async function POST(request: Request) {
-  if (rateLimited(clientKey(request))) return new Response(sse('error', { error: 'Too many agent requests. Please wait a moment and try again.' }), { status: 429, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' } });
+  if (rateLimited(clientKey(request))) return new Response(sse('error', { error: 'Too many agent requests. Please wait a moment and try again.' }), { status: 429, headers });
   const body: unknown = await request.json().catch(() => null);
-  if (!body || typeof body !== 'object') return new Response(sse('error', { error: 'Invalid JSON request body.' }), { status: 400, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' } });
+  if (!body || typeof body !== 'object') return new Response(sse('error', { error: 'Invalid JSON request body.' }), { status: 400, headers });
   const payload = body as Record<string, unknown>;
   const message = typeof payload.message === 'string' ? payload.message.trim() : '';
-  if (!message) return new Response(sse('error', { error: 'Message is required.' }), { status: 400, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' } });
-  if (message.length > 30_000) return new Response(sse('error', { error: 'Message is too long.' }), { status: 413, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' } });
+  if (!message) return new Response(sse('error', { error: 'Message is required.' }), { status: 400, headers });
+  if (message.length > 30_000) return new Response(sse('error', { error: 'Message is too long.' }), { status: 413, headers });
 
   const history = parseHistory(payload.history);
   const model = typeof payload.model === 'string' ? payload.model : undefined;
@@ -65,16 +72,18 @@ export async function POST(request: Request) {
       const write = (event: string, data: unknown) => { if (!cancelled) controller.enqueue(encoder.encode(sse(event, data))); };
       try {
         write('ready', { message: 'Agent is working…' });
-        const result = await runAgent({ message, history, model, signal: request.signal });
+        const result = await runAgentStream({
+          message,
+          history,
+          model,
+          signal: request.signal,
+          onEvent(event) {
+            if (event.type === 'token') write('token', { token: event.token });
+            else if (event.type === 'status') write('status', { message: event.message });
+            else write('meta', event);
+          }
+        });
         if (cancelled) return;
-        write('meta', { model: result.model, steps: result.steps, sources: result.sources, toolResults: result.toolResults });
-        const answer = result.answer || 'The agent returned an empty response.';
-        const chunkSize = 96;
-        for (let i = 0; i < answer.length; i += chunkSize) {
-          if (cancelled) return;
-          write('token', { token: answer.slice(i, i + chunkSize) });
-          await new Promise(resolve => setTimeout(resolve, 0));
-        }
         write('done', { model: result.model, steps: result.steps });
         controller.close();
       } catch (error) {
@@ -92,5 +101,5 @@ export async function POST(request: Request) {
     }
   });
 
-  return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-store, must-revalidate', connection: 'keep-alive', 'x-accel-buffering': 'no' } });
+  return new Response(stream, { headers });
 }
