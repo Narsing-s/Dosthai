@@ -10,21 +10,25 @@ const labels: Record<string, { name: string; hint: string }> = {
 };
 
 function configuredModels() {
-  return [...new Set((process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean))];
+  const ids = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
+  return [...new Set(ids.length ? ids : ['gpt-5.6-luna'])];
 }
 
 export async function GET() {
+  const gateway = Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN);
+  const direct = Boolean(process.env.OPENAI_API_KEY);
+  const provider = gateway || direct;
   const ids = configuredModels();
-  const providerModels = ids.map((id, index) => ({ id, name: labels[id]?.name || (index === 0 ? 'Dosthai Default' : `Dosthai Model ${index + 1}`), hint: labels[id]?.hint || 'Provider-configured AI model' }));
-  const provider = Boolean(process.env.OPENAI_API_KEY && ids.length);
-  const models = providerModels.length ? providerModels : [{ id: LOCAL_MODEL_ID, name: LOCAL_MODEL_NAME, hint: 'Browser-local WebGPU AI; no API key required' }];
+  const models = provider
+    ? ids.map((id, index) => ({ id, name: labels[id]?.name || (index === 0 ? 'Dosthai Default' : `Dosthai Model ${index + 1}`), hint: labels[id]?.hint || 'General-purpose AI model' }))
+    : [{ id: LOCAL_MODEL_ID, name: LOCAL_MODEL_NAME, hint: 'Local rules mode — connect an AI provider for open-ended generation' }];
 
   return NextResponse.json({
     models,
     configuredProvider: provider,
     localMode: !provider,
-    provider: provider ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') : 'browser-local',
+    provider: gateway ? 'vercel-ai-gateway' : direct ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1') : 'local',
     ready: true,
-    message: provider ? undefined : 'Dosthai is ready in browser-local AI mode. A cloud model provider is optional.'
+    message: provider ? undefined : 'No AI provider credentials are available. Open-ended questions require an AI provider.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
