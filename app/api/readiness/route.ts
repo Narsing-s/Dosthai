@@ -10,7 +10,8 @@ const optionalChecks = [
   ['Web research', Boolean(process.env.WEB_SEARCH_API_URL && process.env.WEB_SEARCH_API_KEY), 'WEB_SEARCH_API_URL + WEB_SEARCH_API_KEY'],
   ['RAG/vector database', Boolean(process.env.VECTOR_DATABASE_URL), 'VECTOR_DATABASE_URL'],
   ['Code sandbox', Boolean(process.env.CODE_EXECUTION_ENABLED), 'CODE_EXECUTION_ENABLED'],
-  ['Image generation', Boolean(process.env.IMAGE_API_KEY), 'IMAGE_API_KEY'],
+  ['Image generation', Boolean(process.env.IMAGE_API_KEY || process.env.OPENAI_API_KEY), 'IMAGE_API_KEY or OPENAI_API_KEY'],
+  ['Image model', Boolean(process.env.IMAGE_MODEL?.trim() || process.env.OPENAI_API_KEY || process.env.IMAGE_API_KEY), 'IMAGE_MODEL or provider key'],
   ['Speech', Boolean(process.env.SPEECH_API_KEY), 'SPEECH_API_KEY'],
   ['GitHub integration', Boolean(process.env.GITHUB_APP_ID || process.env.GITHUB_TOKEN), 'GITHUB_APP_ID or GITHUB_TOKEN']
 ] as const;
