@@ -97,6 +97,10 @@ async function executeTool(call: ParsedToolCall, signal?: AbortSignal): Promise<
   }
 }
 
+function isRetryableProviderStatus(status: number) {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
 export async function runAgent(input: { message: string; history?: Array<{ role: 'user' | 'assistant'; content: string }>; model?: string; signal?: AbortSignal }): Promise<AgentRunResult> {
   const message = input.message.trim();
   if (!message) throw new Error('Message is required.');
@@ -112,14 +116,18 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
   const history = (input.history || []).slice(-20).filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map(item => ({ role: item.role, content: item.content.slice(0, 12_000) }));
 
   let lastError: unknown;
-  for (const model of orderedModels) {
+  for (let modelIndex = 0; modelIndex < orderedModels.length; modelIndex++) {
+    const model = orderedModels[modelIndex];
     try {
       const messages: ProviderMessage[] = [{ role: 'system', content: 'You are Dosthai Agent. Complete the user task using available tools when useful. Never invent tool results. Use web_research for current or externally verifiable information and calculator for arithmetic. External or mutating actions are not available in this runtime. Return a concise, useful final answer and mention research sources when used.' }, ...history, { role: 'user', content: message }];
       const sources: AgentSource[] = [];
       const toolResults: AgentToolResult[] = [];
       for (let step = 0; step < MAX_STEPS; step++) {
-        const response = await withTimeout(fetch(`${baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature: 0.2 }), cache: 'no-store', signal: input.signal }), input.signal);
-        if (!response.ok) throw new Error(`AI provider returned HTTP ${response.status}.`);
+        const response = await withTimeout(fetch(`${baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', parallel_tool_calls: true, temperature: 0.2 }), cache: 'no-store', signal: input.signal }), input.signal);
+        if (!response.ok) {
+          const status = response.status;
+          throw Object.assign(new Error(`AI provider returned HTTP ${status}.`), { retryable: isRetryableProviderStatus(status) });
+        }
         const data: unknown = await response.json();
         const root = data && typeof data === 'object' ? data as Record<string, unknown> : {};
         const choices = Array.isArray(root.choices) ? root.choices : [];
@@ -130,7 +138,6 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
         messages.push({ role: 'assistant', content: typeof assistant.content === 'string' ? assistant.content : null, ...(rawToolCalls.length ? { tool_calls: rawToolCalls } : {}) });
         if (!rawToolCalls.length) return { answer: typeof assistant.content === 'string' ? assistant.content : '', model, steps: step + 1, sources, toolResults };
 
-        // Independent tools are executed concurrently so a multi-tool step does not wait on each tool sequentially.
         const parsedCalls = rawToolCalls.map(parseToolCall);
         const results = await Promise.all(parsedCalls.map(call => executeTool(call, input.signal)));
         for (let i = 0; i < results.length; i++) {
@@ -144,6 +151,8 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') throw error;
       lastError = error;
+      const retryable = Boolean(error && typeof error === 'object' && 'retryable' in error && (error as { retryable?: unknown }).retryable === true);
+      if (!retryable || modelIndex === orderedModels.length - 1) throw error instanceof Error ? error : new Error('Agent request failed.');
     }
   }
   throw lastError instanceof Error ? lastError : new Error('Agent request failed.');
