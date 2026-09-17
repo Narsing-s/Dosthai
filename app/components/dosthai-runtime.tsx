@@ -34,6 +34,7 @@ export default function DosthaiRuntime() {
   const [draftRestored, setDraftRestored] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [dropActive, setDropActive] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
 
   useEffect(() => {
     setOnline(navigator.onLine);
@@ -136,7 +137,25 @@ export default function DosthaiRuntime() {
     window.addEventListener('keydown', onShortcut);
     window.addEventListener('pagehide', saveDraft);
 
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then(registration => {
+        const checkForUpdate = () => registration.update().catch(() => undefined);
+        if (registration.waiting) setUpdateReady(true);
+        registration.addEventListener('updatefound', () => {
+          const worker = registration.installing;
+          if (!worker) return;
+          worker.addEventListener('statechange', () => {
+            if (worker.state === 'installed' && navigator.serviceWorker.controller) setUpdateReady(true);
+          });
+        });
+        window.addEventListener('focus', checkForUpdate);
+        const interval = window.setInterval(checkForUpdate, 15 * 60 * 1000);
+        (window as Window & { __dosthaiSwCleanup?: () => void }).__dosthaiSwCleanup = () => {
+          window.removeEventListener('focus', checkForUpdate);
+          window.clearInterval(interval);
+        };
+      }).catch(() => undefined);
+    }
 
     return () => {
       try { recognition?.abort(); } catch { /* ignore cleanup errors */ }
@@ -151,6 +170,8 @@ export default function DosthaiRuntime() {
       observer.disconnect();
       window.removeEventListener('keydown', onShortcut);
       window.removeEventListener('pagehide', saveDraft);
+      (window as Window & { __dosthaiSwCleanup?: () => void }).__dosthaiSwCleanup?.();
+      delete (window as Window & { __dosthaiSwCleanup?: () => void }).__dosthaiSwCleanup;
     };
   }, [draftRestored]);
 
@@ -161,11 +182,21 @@ export default function DosthaiRuntime() {
     setInstallEvent(null);
   }
 
+  async function refreshForUpdate() {
+    setUpdateReady(false);
+    try {
+      const registration = await navigator.serviceWorker.getRegistration('/');
+      registration?.waiting?.postMessage({ type: 'SKIP_WAITING' });
+    } catch { /* ignore update races */ }
+    window.location.reload();
+  }
+
   return <>
     {!online && <div style={{ position: 'fixed', left: 12, right: 12, bottom: 12, zIndex: 100, padding: '10px 14px', borderRadius: 12, background: '#3a1d1d', color: '#fff', fontSize: 13, textAlign: 'center', boxShadow: '0 8px 30px rgba(0,0,0,.25)' }}>You are offline. Existing conversations remain available; AI requests will resume when you reconnect.</div>}
     {online && draftRestored && <button onClick={() => { localStorage.removeItem(DRAFT_KEY); setComposerValue(''); setDraftRestored(false); }} style={{ position: 'fixed', left: 12, bottom: 12, zIndex: 100, padding: '8px 12px', border: 0, borderRadius: 10, background: '#1d2430', color: '#fff', fontSize: 12, cursor: 'pointer', boxShadow: '0 8px 30px rgba(0,0,0,.2)' }}>Draft restored · clear</button>}
     {voiceActive && <div style={{ position: 'fixed', right: 12, bottom: 58, zIndex: 101, padding: '8px 12px', borderRadius: 10, background: '#1d2430', color: '#fff', fontSize: 12, boxShadow: '0 8px 30px rgba(0,0,0,.2)' }}>Listening… tap voice again to stop</div>}
     {dropActive && <div style={{ position: 'fixed', inset: 12, zIndex: 99, border: '2px dashed rgba(255,255,255,.55)', borderRadius: 18, background: 'rgba(20,24,32,.72)', color: '#fff', display: 'grid', placeItems: 'center', fontSize: 15, fontWeight: 700, pointerEvents: 'none' }}>Drop a text/code file into Dosthai</div>}
     {installEvent && <button onClick={install} style={{ position: 'fixed', right: 12, bottom: 12, zIndex: 101, padding: '9px 13px', border: 0, borderRadius: 10, background: '#fff', color: '#111', fontWeight: 700, fontSize: 12, cursor: 'pointer', boxShadow: '0 8px 30px rgba(0,0,0,.25)' }}>Install Dosthai</button>}
+    {updateReady && <button onClick={refreshForUpdate} style={{ position: 'fixed', left: '50%', top: 12, transform: 'translateX(-50%)', zIndex: 110, padding: '9px 14px', border: 0, borderRadius: 999, background: '#fff', color: '#111', fontWeight: 800, fontSize: 12, cursor: 'pointer', boxShadow: '0 8px 30px rgba(0,0,0,.25)' }}>New Dosthai version · Refresh</button>}
   </>;
 }
