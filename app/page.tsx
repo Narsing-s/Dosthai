@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 type Message = { role: 'user' | 'assistant'; content: string; createdAt?: number };
-type Conversation = { id: string; title: string; messages: Message[]; updatedAt: number };
+type Conversation = { id: string; title: string; messages: Message[]; updatedAt: number; pinned?: boolean; archived?: boolean };
 type Model = { id: string; name: string; hint: string };
 
 const suggestions = [
@@ -62,7 +62,10 @@ export default function Home() {
       const saved = localStorage.getItem('dosthai-conversations');
       const theme = localStorage.getItem('dosthai-theme');
       const model = localStorage.getItem('dosthai-model');
-      if (saved) setConversations(JSON.parse(saved));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setConversations(parsed.map((c: Conversation) => ({ ...c, pinned: Boolean(c.pinned), archived: Boolean(c.archived) })));
+      }
       if (theme === 'light') setDark(false);
       if (model) setSelectedModel(current => ({ ...current, id: model }));
     } catch { /* ignore malformed browser storage */ }
@@ -103,16 +106,17 @@ export default function Home() {
     } : c));
   }
 
-  async function send(value = input) {
+  async function send(value = input, historyOverride?: Message[]) {
     const text = value.trim();
     if (!text || busy) return;
     if (!selectedModel.id) { notify('AI is not configured yet. Add OPENAI_API_KEY and OPENAI_MODEL/DOSTHAI_MODELS on the server.'); return; }
+    const baseHistory = historyOverride ?? messages;
     const id = conversationId || makeId();
     if (!conversationId) {
       setConversationId(id);
       setConversations(current => [{ id, title: titleFor(text), messages: [], updatedAt: Date.now() }, ...current]);
     }
-    const next = [...messages, { role: 'user' as const, content: text, createdAt: Date.now() }];
+    const next = [...baseHistory, { role: 'user' as const, content: text, createdAt: Date.now() }];
     setInput('');
     setMessages([...next, { role: 'assistant', content: '', createdAt: Date.now() }]);
     setBusy(true);
@@ -123,7 +127,7 @@ export default function Home() {
       if (agentMode) {
         const response = await fetch('/api/agent', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ message: text, history: messages, model: selectedModel.id }), signal: controller.signal
+          body: JSON.stringify({ message: text, history: baseHistory, model: selectedModel.id }), signal: controller.signal
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || 'Agent request failed.');
@@ -135,7 +139,7 @@ export default function Home() {
 
       const response = await fetch('/api/chat', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message: text, history: messages, model: selectedModel.id }), signal: controller.signal
+        body: JSON.stringify({ message: text, history: baseHistory, model: selectedModel.id }), signal: controller.signal
       });
       if (!response.ok || !response.body) {
         const raw = await response.text(); let detail = raw;
@@ -173,7 +177,20 @@ export default function Home() {
   function stopGeneration() { abortRef.current?.abort(); }
   function newChat() { if (busy) stopGeneration(); setMessages([]); setConversationId(null); setInput(''); setMenuOpen(false); setSidebarOpen(false); }
   function openConversation(c: Conversation) { if (busy) return; setConversationId(c.id); setMessages(c.messages); setSidebarOpen(false); setMenuOpen(false); }
-  function deleteConversation(id: string) { setConversations(current => current.filter(c => c.id !== id)); if (conversationId === id) newChat(); }
+  function deleteConversation(id: string) {
+    const target = conversations.find(c => c.id === id);
+    if (!target || !window.confirm(`Delete “${target.title}”? This only removes the local copy.`)) return;
+    setConversations(current => current.filter(c => c.id !== id));
+    if (conversationId === id) newChat();
+  }
+  function renameConversation(id: string) {
+    const current = conversations.find(c => c.id === id); if (!current) return;
+    const title = window.prompt('Conversation name', current.title)?.trim();
+    if (!title) return;
+    setConversations(items => items.map(c => c.id === id ? { ...c, title: title.slice(0, 80), updatedAt: Date.now() } : c));
+  }
+  function togglePin(id: string) { setConversations(items => items.map(c => c.id === id ? { ...c, pinned: !c.pinned, updatedAt: Date.now() } : c)); }
+  function toggleArchive(id: string) { setConversations(items => items.map(c => c.id === id ? { ...c, archived: !c.archived, updatedAt: Date.now() } : c)); }
   function editUserMessage(index: number) {
     if (busy) return;
     const message = messages[index]; if (message.role !== 'user') return;
@@ -182,6 +199,16 @@ export default function Home() {
     setMessages(trimmed);
     saveCurrent(trimmed);
     notify('Message loaded into the composer. Edit it and send again.');
+  }
+  function regenerateMessage(index: number) {
+    if (busy || messages[index]?.role !== 'assistant') return;
+    const priorUserIndex = messages.slice(0, index).map((m, i) => m.role === 'user' ? i : -1).filter(i => i >= 0).pop();
+    if (priorUserIndex === undefined) return;
+    const base = messages.slice(0, priorUserIndex);
+    const prior = messages[priorUserIndex];
+    setMessages(base);
+    saveCurrent(base);
+    send(prior.content, base);
   }
 
   async function copyMessage(index: number, text: string) {
@@ -206,7 +233,7 @@ export default function Home() {
         const parsed = JSON.parse(String(reader.result || '')); const items = Array.isArray(parsed) ? parsed : [parsed];
         const valid = items.filter((x): x is Conversation => x && typeof x.id === 'string' && typeof x.title === 'string' && Array.isArray(x.messages));
         if (!valid.length) throw new Error('No valid Dosthai conversation found.');
-        setConversations(current => [...valid.map(x => ({ ...x, id: makeId() })), ...current]); notify(`${valid.length} conversation${valid.length > 1 ? 's' : ''} imported.`);
+        setConversations(current => [...valid.map(x => ({ ...x, id: makeId(), pinned: Boolean(x.pinned), archived: Boolean(x.archived) })), ...current]); notify(`${valid.length} conversation${valid.length > 1 ? 's' : ''} imported.`);
       } catch (e) { notify(e instanceof Error ? e.message : 'Invalid conversation file.'); }
     }; reader.readAsText(file);
   }
@@ -223,8 +250,9 @@ export default function Home() {
     recognition.onresult = (event: any) => setInput(current => `${current}${current ? ' ' : ''}${event.results[0][0].transcript}`); recognition.start();
   }
 
-  const sorted = useMemo(() => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt), [conversations]);
-  const recent = useMemo(() => sorted.filter(c => !search.trim() || `${c.title} ${c.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(search.toLowerCase())).slice(0, 20), [sorted, search]);
+  const sorted = useMemo(() => [...conversations].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || Number(Boolean(a.archived)) - Number(Boolean(b.archived)) || b.updatedAt - a.updatedAt), [conversations]);
+  const recent = useMemo(() => sorted.filter(c => !c.archived && (!search.trim() || `${c.title} ${c.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(search.toLowerCase()))).slice(0, 20), [sorted, search]);
+  const archivedCount = useMemo(() => conversations.filter(c => c.archived).length, [conversations]);
 
   return <main className={`dosthai ${dark ? '' : 'light'}`}>
     {sidebarOpen && <button className="mobile-scrim" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />}
@@ -234,7 +262,7 @@ export default function Home() {
       <button className="search-chat" onClick={() => setSearchOpen(!searchOpen)}>⌕ <span>Search chats</span><kbd>Ctrl F</kbd></button>
       {searchOpen && <div className="search-box"><input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search conversations…" /><button onClick={() => { setSearch(''); setSearchOpen(false); }}>×</button></div>}
       <div className="navtitle">Recent</div>
-      <div className="history-list">{recent.length ? recent.map(c => <div className={`history-row ${conversationId === c.id ? 'active' : ''}`} key={c.id}><button className="history" onClick={() => openConversation(c)}>◷ <span>{c.title}</span></button><button className="delete-chat" onClick={() => deleteConversation(c.id)} aria-label={`Delete ${c.title}`}>×</button></div>) : <div className="empty-history">{search ? 'No matching conversations.' : 'Your conversations will appear here.'}</div>}</div>
+      <div className="history-list">{recent.length ? recent.map(c => <div className={`history-row ${conversationId === c.id ? 'active' : ''}`} key={c.id}><button className="history" onClick={() => openConversation(c)}>◷ <span>{c.pinned ? '📌 ' : ''}{c.title}</span></button><button className="delete-chat" onClick={() => renameConversation(c.id)} aria-label={`Rename ${c.title}`}>✎</button><button className="delete-chat" onClick={() => togglePin(c.id)} aria-label={`${c.pinned ? 'Unpin' : 'Pin'} ${c.title}`}>☆</button><button className="delete-chat" onClick={() => toggleArchive(c.id)} aria-label={`Archive ${c.title}`}>□</button><button className="delete-chat" onClick={() => deleteConversation(c.id)} aria-label={`Delete ${c.title}`}>×</button></div>) : <div className="empty-history">{search ? 'No matching conversations.' : archivedCount ? `${archivedCount} archived conversation${archivedCount > 1 ? 's' : ''}.` : 'Your conversations will appear here.'}</div>}</div>
       <div className="sidebar-section"><div className="navtitle">Workspace</div><button className="sideitem" onClick={newChat}>⌘ <span>AI Chat</span></button><button className="sideitem" onClick={() => notify(capabilities.rag ? 'Knowledge base is enabled.' : 'Knowledge base is not configured on this server.')}>◫ <span>Files & knowledge</span></button><button className="sideitem" onClick={() => setSettingsOpen(true)}>⚙ <span>Settings</span></button></div>
       <div className="spacer" /><div className="account"><div className="avatar">N</div><div><strong>Narsing</strong><span>Personal workspace</span></div><button onClick={() => setMenuOpen(!menuOpen)}>•••</button></div>
     </aside>
@@ -247,7 +275,7 @@ export default function Home() {
       </header>
 
       <div className="chat"><div className="center">
-        {!messages.length ? <div className="hero"><div className="hero-icon">✦</div><h1>How can I help?</h1><p>Dosthai is your AI workspace for thinking, coding, writing, research, analysis, and everyday work.</p><div className="suggestions">{suggestions.map(([icon, title, prompt]) => <button key={prompt} onClick={() => send(prompt)}><span>{icon}</span><div><strong>{title}</strong><small>{prompt}</small></div><b>›</b></button>)}</div></div> : <div className="messages">{messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.createdAt || index}-${index}`}><div className="role"><span className={message.role === 'assistant' ? 'ai-avatar' : 'user-avatar'}>{message.role === 'assistant' ? '✦' : 'N'}</span>{message.role === 'assistant' ? 'Dosthai' : 'You'}</div><div className="content">{message.content ? renderContent(message.content) : <span className="typing"><i/><i/><i/></span>}</div>{message.content && <div className="message-actions">{message.role === 'user' && !busy && <button onClick={() => editUserMessage(index)}>Edit</button>}{message.role === 'assistant' && <><button onClick={() => copyMessage(index, message.content)}>{copied === index ? 'Copied' : 'Copy'}</button><button onClick={() => { const prior = messages.slice(0, index).reverse().find(m => m.role === 'user'); if (prior && !busy) send(prior.content); }}>Regenerate</button></>}</div>}</article>)}<div ref={endRef}/></div>}
+        {!messages.length ? <div className="hero"><div className="hero-icon">✦</div><h1>How can I help?</h1><p>Dosthai is your AI workspace for thinking, coding, writing, research, analysis, and everyday work.</p><div className="suggestions">{suggestions.map(([icon, title, prompt]) => <button key={prompt} onClick={() => send(prompt)}><span>{icon}</span><div><strong>{title}</strong><small>{prompt}</small></div><b>›</b></button>)}</div></div> : <div className="messages">{messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.createdAt || index}-${index}`}><div className="role"><span className={message.role === 'assistant' ? 'ai-avatar' : 'user-avatar'}>{message.role === 'assistant' ? '✦' : 'N'}</span>{message.role === 'assistant' ? 'Dosthai' : 'You'}</div><div className="content">{message.content ? renderContent(message.content) : <span className="typing"><i/><i/><i/></span>}</div>{message.content && <div className="message-actions">{message.role === 'user' && !busy && <button onClick={() => editUserMessage(index)}>Edit</button>}{message.role === 'assistant' && <><button onClick={() => copyMessage(index, message.content)}>{copied === index ? 'Copied' : 'Copy'}</button><button onClick={() => regenerateMessage(index)} disabled={busy}>Regenerate</button></>}</div>}</article>)}<div ref={endRef}/></div>}
       </div></div>
 
       <div className="composer"><div className="composerbox"><button className="attach" onClick={() => fileRef.current?.click()} aria-label="Attach file">＋</button><textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder={agentMode ? 'Ask Dosthai Agent…' : 'Message Dosthai…'} rows={1} /><button className={`voice ${listening ? 'active' : ''}`} onClick={startVoice} aria-label="Voice input">◉</button><button className={`send ${busy ? 'stop' : ''}`} onClick={busy ? stopGeneration : () => send()} disabled={!busy && !input.trim()} aria-label={busy ? 'Stop generation' : 'Send'}>{busy ? '■' : '↑'}</button></div><div className="composer-note">{agentMode ? 'Agent mode can use calculator and configured web research tools.' : 'Dosthai streams responses for fast feedback. It can make mistakes; check important information.'}</div></div>
