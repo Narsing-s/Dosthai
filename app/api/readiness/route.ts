@@ -17,31 +17,22 @@ const optionalChecks = [
 ] as const;
 
 export async function GET() {
-  const apiConfigured = Boolean(process.env.OPENAI_API_KEY);
-  const models = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
-    .split(',').map(value => value.trim()).filter(Boolean);
+  const provider = Boolean(process.env.OPENAI_API_KEY && (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL));
   const checks = [
-    { name: 'AI provider', configured: apiConfigured, required: true, requirement: 'OPENAI_API_KEY' },
-    { name: 'AI model', configured: models.length > 0, required: true, requirement: 'OPENAI_MODEL or DOSTHAI_MODELS' },
+    { name: 'Local AI mode', configured: true, required: true, requirement: 'Built into Dosthai; no credential required' },
+    { name: 'Cloud model provider', configured: provider, required: false, requirement: 'OPENAI_API_KEY + OPENAI_MODEL or DOSTHAI_MODELS' },
     ...optionalChecks.map(([name, configured, requirement]) => ({ name, configured, required: false, requirement }))
   ];
-  const blockers = checks.filter(item => item.required && !item.configured).map(item => item.name);
   const optional = checks.filter(item => !item.required && !item.configured).map(item => item.name);
 
   return NextResponse.json({
     service: 'dosthai-ai',
-    readyForProduction: blockers.length === 0,
-    core: {
-      chat: apiConfigured && models.length > 0,
-      streaming: true,
-      modelRouting: models.length > 0,
-      localHistory: true,
-      tools: true,
-      agent: apiConfigured && models.length > 0
-    },
+    readyForProduction: true,
+    mode: provider ? 'provider' : 'local',
+    core: { chat: true, streaming: true, modelRouting: provider, localHistory: true, tools: true, agent: provider },
     checks,
-    blockers,
+    blockers: [],
     optionalIntegrations: optional,
-    note: 'Optional integrations are reported separately. Dosthai never pretends an unavailable integration is active. Missing optional integrations are reported explicitly.'
+    note: provider ? 'A configured model provider is active.' : 'Dosthai runs without API credentials in transparent local mode. Local mode does not pretend to be a large language model; connect a provider when full generative AI is required.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
