@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
 const IMAGE_MAX_CHARS = 7_000_000;
-const LOCAL_MODEL_ID = 'SmolLM2-360M-Instruct-q4f32-MLC';
+// Must exactly match the model ID shipped in @mlc-ai/web-llm 0.2.85.
+const LOCAL_MODEL_ID = 'SmolLM2-360M-Instruct-q4f32_1-MLC';
 const CPU_MODEL_REPO = 'tensorblock/SmolLM2-360M-Instruct-GGUF';
 const CPU_MODEL_FILE = 'SmolLM2-360M-Instruct-Q2_K.gguf';
 
@@ -16,6 +17,7 @@ export default function DosthaiEnhancements() {
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const engineRef = useRef<any>(null);
   const enginePromiseRef = useRef<Promise<any> | null>(null);
+  const workerRef = useRef<Worker | null>(null);
   const cpuEngineRef = useRef<any>(null);
   const cpuEnginePromiseRef = useRef<Promise<any> | null>(null);
   const [imageAttached, setImageAttached] = useState(false);
@@ -27,32 +29,21 @@ export default function DosthaiEnhancements() {
   async function getCpuWasmEngine() {
     if (cpuEngineRef.current) return cpuEngineRef.current;
     if (cpuEnginePromiseRef.current) return cpuEnginePromiseRef.current;
-
     setLocalStatus('loading');
     setLocalProgress('Starting CPU-compatible browser AI…');
-    cpuEnginePromiseRef.current = Promise.all([
-      import('@wllama/wllama'),
-      import('@wllama/wllama/esm/wasm-from-cdn.js'),
-    ]).then(async ([wllamaModule, wasmModule]) => {
+    cpuEnginePromiseRef.current = Promise.all([import('@wllama/wllama'), import('@wllama/wllama/esm/wasm-from-cdn.js')]).then(async ([wllamaModule, wasmModule]) => {
       const Wllama = (wllamaModule as any).Wllama;
       const WasmFromCDN = (wasmModule as any).default;
-      const engine = new Wllama(WasmFromCDN, {
-        parallelDownloads: 3,
-        allowOffline: true,
-        suppressNativeLog: true,
-      });
+      const engine = new Wllama(WasmFromCDN, { parallelDownloads: 3, allowOffline: true, suppressNativeLog: true });
       setLocalProgress('Downloading the lightweight CPU model (first use only)…');
-      await engine.loadModelFromHF(
-        { repo: CPU_MODEL_REPO, file: CPU_MODEL_FILE },
-        {
-          n_gpu_layers: 0,
-          n_threads: Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))),
-          n_ctx: 2048,
-          progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
-            if (total > 0) setLocalProgress(`Downloading CPU model… ${Math.round((loaded / total) * 100)}%`);
-          },
+      await engine.loadModelFromHF({ repo: CPU_MODEL_REPO, file: CPU_MODEL_FILE }, {
+        n_gpu_layers: 0,
+        n_threads: Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))),
+        n_ctx: 2048,
+        progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
+          if (total > 0) setLocalProgress(`Downloading CPU model… ${Math.round((loaded / total) * 100)}%`);
         },
-      );
+      });
       cpuEngineRef.current = engine;
       setLocalStatus('cpu-wasm');
       setLocalProgress('CPU-compatible local AI is ready.');
@@ -63,19 +54,16 @@ export default function DosthaiEnhancements() {
       setLocalProgress(error instanceof Error ? error.message : 'CPU-compatible local AI could not start.');
       throw error;
     });
-
     return cpuEnginePromiseRef.current;
   }
 
   async function getLocalEngine() {
     if (engineRef.current) return engineRef.current;
     if (enginePromiseRef.current) return enginePromiseRef.current;
-
-    const gpu = (navigator as Navigator & { gpu?: { requestAdapter?: () => Promise<unknown> } }).gpu;
+    const gpu = (navigator as Navigator & { gpu?: { requestAdapter?: () => Promise<any> } }).gpu;
     if (!gpu?.requestAdapter) return getCpuWasmEngine();
     const adapter = await gpu.requestAdapter();
     if (!adapter) return getCpuWasmEngine();
-
     setLocalStatus('loading');
     setLocalProgress('Starting private browser-local AI…');
     enginePromiseRef.current = import('@mlc-ai/web-llm').then(async webllm => {
@@ -86,7 +74,6 @@ export default function DosthaiEnhancements() {
         },
         logLevel: 'ERROR' as const,
       };
-
       try {
         setLocalProgress('Starting the AI worker…');
         const worker = new Worker(new URL('../workers/dosthai-local-ai.worker.ts', import.meta.url), { type: 'module' });
@@ -114,9 +101,7 @@ export default function DosthaiEnhancements() {
       enginePromiseRef.current = null;
       workerRef.current?.terminate();
       workerRef.current = null;
-      try {
-        return await getCpuWasmEngine();
-      } catch {
+      try { return await getCpuWasmEngine(); } catch {
         setLocalStatus('error');
         setLocalProgress(error instanceof Error ? error.message : 'Local AI could not start.');
         throw error;
@@ -133,9 +118,7 @@ export default function DosthaiEnhancements() {
   }
 
   async function runLocalCompletion(engine: any, messages: ChatMessage[]) {
-    if (engine?.chat?.completions?.create) {
-      return engine.chat.completions.create({ messages, temperature: 0.7, top_p: 0.9, max_tokens: 768, stream: true });
-    }
+    if (engine?.chat?.completions?.create) return engine.chat.completions.create({ messages, temperature: 0.7, top_p: 0.9, max_tokens: 768, stream: true });
     return engine.createChatCompletion({ messages, temperature: 0.7, top_p: 0.9, max_tokens: 768, stream: true });
   }
 
@@ -154,8 +137,7 @@ export default function DosthaiEnhancements() {
           ];
           if (Array.isArray(payload.images) && payload.images.length) {
             send('error', { error: 'This lightweight offline model is text-only. Remove the image or use a configured cloud vision model.' });
-            controller.close();
-            return;
+            controller.close(); return;
           }
           send('ready', { message: localStatusMessage() });
           const engine = await getLocalEngine();
@@ -173,33 +155,16 @@ export default function DosthaiEnhancements() {
           const original = originalFetchRef.current;
           if (original) {
             try {
-              const fallbackBody = JSON.parse(body);
-              fallbackBody.model = 'dosthai-local';
-              const fallback = await original('/api/chat', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(fallbackBody),
-              });
+              const fallbackBody = JSON.parse(body); fallbackBody.model = 'dosthai-local';
+              const fallback = await original('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(fallbackBody) });
               const reader = fallback.body?.getReader();
-              if (reader) {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  controller.enqueue(value);
-                }
-                controller.close();
-                return;
-              }
+              if (reader) { while (true) { const { done, value } = await reader.read(); if (done) break; controller.enqueue(value); } controller.close(); return; }
             } catch {}
           }
-          send('error', { error: message });
-          controller.close();
+          send('error', { error: message }); controller.close();
         }
       },
-      cancel() {
-        try { engineRef.current?.interruptGenerate?.(); } catch {}
-        try { cpuEngineRef.current?.interruptGenerate?.(); } catch {}
-      },
+      cancel() { try { engineRef.current?.interruptGenerate?.(); } catch {} try { cpuEngineRef.current?.interruptGenerate?.(); } catch {} },
     });
     return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-dosthai-model': 'dosthai-local', 'x-dosthai-local-mode': 'true' } });
   }
@@ -216,13 +181,7 @@ export default function DosthaiEnhancements() {
       event.stopImmediatePropagation();
       if (file.size > IMAGE_MAX_BYTES) { window.alert('Images are limited to 2 MB.'); target.value = ''; return; }
       const reader = new FileReader();
-      reader.onload = () => {
-        const value = String(reader.result || '');
-        if (!value.startsWith('data:image/') || value.length > IMAGE_MAX_CHARS) { window.alert('That image is too large to send.'); return; }
-        pendingImageRef.current = value;
-        setImageAttached(true);
-        target.value = '';
-      };
+      reader.onload = () => { const value = String(reader.result || ''); if (!value.startsWith('data:image/') || value.length > IMAGE_MAX_CHARS) { window.alert('That image is too large to send.'); return; } pendingImageRef.current = value; setImageAttached(true); target.value = ''; };
       reader.readAsDataURL(file);
     };
     input.addEventListener('change', onChange, true);
@@ -239,11 +198,7 @@ export default function DosthaiEnhancements() {
         try {
           const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
           if (body && typeof body === 'object') {
-            if (pendingImageRef.current) {
-              body.images = [{ dataUrl: pendingImageRef.current, detail: 'auto' }];
-              pendingImageRef.current = null;
-              setImageAttached(false);
-            }
+            if (pendingImageRef.current) { body.images = [{ dataUrl: pendingImageRef.current, detail: 'auto' }]; pendingImageRef.current = null; setImageAttached(false); }
             if (body.model === 'dosthai-local' && !Array.isArray(body.images)) return localSseStream(JSON.stringify(body));
             init = { ...init, body: JSON.stringify(body) };
           }
@@ -256,12 +211,7 @@ export default function DosthaiEnhancements() {
       originalFetchRef.current = null;
       try { engineRef.current?.interruptGenerate?.(); } catch {}
       try { cpuEngineRef.current?.exit?.(); } catch {}
-      workerRef.current?.terminate();
-      workerRef.current = null;
-      engineRef.current = null;
-      enginePromiseRef.current = null;
-      cpuEngineRef.current = null;
-      cpuEnginePromiseRef.current = null;
+      workerRef.current?.terminate(); workerRef.current = null; engineRef.current = null; enginePromiseRef.current = null; cpuEngineRef.current = null; cpuEnginePromiseRef.current = null;
     };
   }, []);
 
@@ -270,35 +220,25 @@ export default function DosthaiEnhancements() {
       document.querySelectorAll<HTMLElement>('.message.assistant .message-actions').forEach(actions => {
         if (actions.dataset.dosthaiTts === '1') return;
         actions.dataset.dosthaiTts = '1';
-        const button = document.createElement('button');
-        button.type = 'button'; button.textContent = 'Read aloud'; button.setAttribute('aria-label', 'Read aloud');
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Read aloud'; button.setAttribute('aria-label', 'Read aloud');
         button.onclick = async () => {
-          const article = actions.closest('.message.assistant');
-          const text = article?.querySelector<HTMLElement>('.content')?.innerText?.trim();
+          const article = actions.closest('.message.assistant'); const text = article?.querySelector<HTMLElement>('.content')?.innerText?.trim();
           if (!text || text.length > 6000) return;
           try {
             setSpeaking(true); audioRef.current?.pause();
             const response = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
             if (!response.ok) throw new Error('Speech request failed.');
             const blob = await response.blob(); const url = URL.createObjectURL(blob); const audio = new Audio(url); audioRef.current = audio;
-            audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); };
-            audio.onerror = () => { URL.revokeObjectURL(url); setSpeaking(false); };
-            await audio.play();
+            audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); }; audio.onerror = () => { URL.revokeObjectURL(url); setSpeaking(false); }; await audio.play();
           } catch { setSpeaking(false); }
         };
         actions.appendChild(button);
       });
     };
-    addSpeechButtons();
-    const observer = new MutationObserver(addSpeechButtons);
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    addSpeechButtons(); const observer = new MutationObserver(addSpeechButtons); observer.observe(document.body, { childList: true, subtree: true }); return () => observer.disconnect();
   }, []);
 
-  const statusText = localStatus === 'cpu-wasm'
-    ? '⚡ CPU-compatible local AI ready — no GPU required.'
-    : localProgress;
-
+  const statusText = localStatus === 'cpu-wasm' ? '⚡ CPU-compatible local AI ready — no GPU required.' : localProgress;
   if (imageAttached) return <><div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}><span>🖼️ Image ready for the next message</span><button type="button" onClick={() => { pendingImageRef.current = null; setImageAttached(false); }} style={{ border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer' }}>×</button></div>{speaking ? <div style={{ position: 'fixed', right: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div> : null}</>;
   if (speaking) return <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div>;
   return localStatus !== 'idle' ? <div style={{ position: 'fixed', left: 20, bottom: 20, zIndex: 50, maxWidth: 'min(520px, calc(100vw - 40px))', padding: '10px 14px', borderRadius: 14, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}><strong>🧠 Dosthai Local AI</strong><div style={{ marginTop: 4, opacity: .8 }}>{statusText}</div></div> : null;
