@@ -1,6 +1,6 @@
 {
   "name": "dosthai-ai",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@mlc-ai/web-llm": "0.2.85",
+    "@wllama/wllama": "3.6.1",
     "next": "16.3.3",
     "react": "19.2.0",
     "react-dom": "19.2.0"
