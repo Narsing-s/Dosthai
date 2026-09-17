@@ -6,11 +6,13 @@ const MAX_STEPS = 4;
 const MAX_TOOL_CALLS_PER_STEP = 4;
 const MAX_RESULTS = 8;
 const REQUEST_TIMEOUT_MS = 45_000;
-const DEFAULT_MODELS = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
 
 function allowedModels() {
-  const configured = (process.env.DOSTHAI_MODELS || '').split(',').map(v => v.trim()).filter(Boolean);
-  return configured.length ? configured : DEFAULT_MODELS;
+  const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean);
+  return [...new Set(configured)];
 }
 
 function withTimeout<T>(promise: Promise<T>, signal?: AbortSignal, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
@@ -101,8 +103,9 @@ export async function runAgent(input: { message: string; history?: Array<{ role:
   if (!apiKey) throw new Error('No AI provider is configured.');
 
   const models = allowedModels();
+  if (!models.length) throw new Error('No AI model is configured. Set OPENAI_MODEL or DOSTHAI_MODELS.');
   const requested = input.model?.trim() || '';
-  const preferred = models.includes(requested) ? requested : models[0];
+  const preferred = requested && models.includes(requested) ? requested : models[0];
   const orderedModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
   const history = (input.history || []).slice(-20).filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string').map(item => ({ role: item.role, content: item.content.slice(0, 12_000) }));
