@@ -56,6 +56,7 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const persistTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
 
   useEffect(() => {
     try {
@@ -82,7 +83,8 @@ export default function Home() {
   useEffect(() => { localStorage.setItem('dosthai-conversations', JSON.stringify(conversations)); }, [conversations]);
   useEffect(() => { if (selectedModel.id) localStorage.setItem('dosthai-model', selectedModel.id); }, [selectedModel]);
   useEffect(() => { localStorage.setItem('dosthai-theme', dark ? 'dark' : 'light'); }, [dark]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
+  useEffect(() => () => { if (persistTimerRef.current) window.clearTimeout(persistTimerRef.current); }, []);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' }); }, [messages, busy]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -104,6 +106,42 @@ export default function Home() {
       messages: nextMessages,
       updatedAt: Date.now()
     } : c));
+  }
+
+  function scheduleSave(nextMessages: Message[], id: string, immediate = false) {
+    if (immediate) {
+      if (persistTimerRef.current) { window.clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
+      saveCurrent(nextMessages, id);
+      return;
+    }
+    if (persistTimerRef.current) return;
+    persistTimerRef.current = window.setTimeout(() => {
+      persistTimerRef.current = null;
+      saveCurrent(nextMessages, id);
+    }, 400);
+  }
+
+  function parseSseEvent(event: string, onToken: (token: string) => void, onError: (message: string) => void) {
+    let eventType = 'message';
+    const dataLines: string[] = [];
+    for (const rawLine of event.replace(/\r/g, '').split('\n')) {
+      if (rawLine.startsWith(':')) continue;
+      if (rawLine.startsWith('event:')) { eventType = rawLine.slice(6).trim(); continue; }
+      if (rawLine.startsWith('data:')) dataLines.push(rawLine.slice(5).trimStart());
+    }
+    if (!dataLines.length) return;
+    const data = dataLines.join('\n').trim();
+    if (!data || data === '[DONE]') return;
+    if (eventType === 'error') {
+      try { const parsed = JSON.parse(data); onError(typeof parsed?.error === 'string' ? parsed.error : 'The AI stream failed.'); }
+      catch { onError(data); }
+      return;
+    }
+    try {
+      const parsed = JSON.parse(data);
+      const token = parsed?.choices?.[0]?.delta?.content;
+      if (typeof token === 'string' && token) onToken(token);
+    } catch { /* ignore malformed provider event */ }
   }
 
   async function send(value = input, historyOverride?: Message[]) {
@@ -147,30 +185,32 @@ export default function Home() {
         throw new Error(detail);
       }
       const reader = response.body.getReader();
-      const decoder = new TextDecoder(); let buffer = ''; let answer = '';
+      const decoder = new TextDecoder(); let buffer = ''; let answer = ''; let streamError = '';
+      const processEvent = (event: string) => parseSseEvent(event, token => {
+        answer += token;
+        const updated = next.concat({ role: 'assistant' as const, content: answer, createdAt: Date.now() });
+        setMessages(updated);
+        scheduleSave(updated, id);
+      }, message => { streamError = message; });
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n'); buffer = events.pop() || '';
-        for (const event of events) for (const line of event.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim(); if (!data || data === '[DONE]') continue;
-          try {
-            const token = JSON.parse(data)?.choices?.[0]?.delta?.content;
-            if (token) {
-              answer += token;
-              const updated = next.concat({ role: 'assistant' as const, content: answer, createdAt: Date.now() });
-              setMessages(updated); saveCurrent(updated, id);
-            }
-          } catch { /* ignore incomplete SSE chunks */ }
-        }
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const event of events) processEvent(event);
+        if (streamError) { await reader.cancel(); throw new Error(streamError); }
       }
-      const updated = answer ? next.concat({ role: 'assistant' as const, content: answer, createdAt: Date.now() }) : next.concat({ role: 'assistant' as const, content: 'The model returned an empty response.', createdAt: Date.now() });
-      setMessages(updated); saveCurrent(updated, id);
+      buffer += decoder.decode();
+      if (buffer.trim()) processEvent(buffer);
+      if (streamError) throw new Error(streamError);
+      const finalAnswer = answer || 'The model returned an empty response.';
+      const updated = next.concat({ role: 'assistant' as const, content: finalAnswer, createdAt: Date.now() });
+      setMessages(updated); scheduleSave(updated, id, true);
     } catch (error) {
       const updated = next.concat({ role: 'assistant' as const, content: error instanceof DOMException && error.name === 'AbortError' ? 'Generation stopped.' : `I couldn't reach the AI service. ${error instanceof Error ? error.message : 'Request failed'}`, createdAt: Date.now() });
-      setMessages(updated); saveCurrent(updated, id);
+      setMessages(updated); scheduleSave(updated, id, true);
     } finally { abortRef.current = null; setBusy(false); }
   }
 
