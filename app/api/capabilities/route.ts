@@ -38,10 +38,10 @@ export async function GET() {
       'Sandboxed code execution with resource limits',
       'Long-running resumable agents, background jobs and observability'
     ] : [
-      'Optional cloud model provider for larger hosted models and advanced multimodal/agent workloads',
-      'Authenticated cloud conversations with account isolation',
+      'Browser-local WebGPU generative AI is active with no API key',
+      'Optional cloud models can add stronger hosted reasoning and multimodal capabilities',
       'Real web research with citations and source controls',
-      'Expanded native tool calling and multi-step agent orchestration'
+      'Expanded native tool calling and multi-step agent orchestration when a cloud provider is configured'
     ]
   }, { headers: { 'cache-control': 'no-store' } });
 }
