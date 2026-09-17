@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import './ui-polish.css';
 import DosthaiRuntime from './components/dosthai-runtime';
 import DosthaiEnhancements from './components/dosthai-enhancements';
 
