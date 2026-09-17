@@ -55,6 +55,30 @@ function shouldFallback(status: number) {
   return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
+function streamWithHeartbeat(body: ReadableStream<Uint8Array>, onCancel: () => void) {
+  const reader = body.getReader();
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(encoder.encode(': dosthai-stream-open\n\n'));
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      onCancel();
+      await reader.cancel().catch(() => undefined);
+    }
+  });
+}
+
 export async function POST(request: Request) {
   if (rateLimited(clientKey(request))) {
     return NextResponse.json(
@@ -102,22 +126,21 @@ export async function POST(request: Request) {
   for (const model of fallbackModels) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const abortFromClient = () => controller.abort();
+    request.signal.addEventListener('abort', abortFromClient, { once: true });
 
     try {
       const upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: providerHeaders(apiKey),
-        body: JSON.stringify({
-          model,
-          messages,
-          stream: true
-        }),
+        body: JSON.stringify({ model, messages, stream: true }),
         cache: 'no-store',
         signal: controller.signal
       });
 
       if (upstream.ok && upstream.body) {
-        return new Response(upstream.body, {
+        const stream = streamWithHeartbeat(upstream.body, () => controller.abort());
+        return new Response(stream, {
           status: 200,
           headers: {
             'content-type': 'text/event-stream; charset=utf-8',
@@ -133,11 +156,15 @@ export async function POST(request: Request) {
       lastDetail = detail.slice(0, 500);
       if (!shouldFallback(upstream.status)) break;
     } catch (error) {
+      if (request.signal.aborted) {
+        return new Response(null, { status: 499 });
+      }
       lastDetail = error instanceof Error && error.name === 'AbortError'
         ? 'The AI provider timed out.'
         : error instanceof Error ? error.message : 'Network request failed';
     } finally {
       clearTimeout(timeout);
+      request.signal.removeEventListener('abort', abortFromClient);
     }
   }
 
