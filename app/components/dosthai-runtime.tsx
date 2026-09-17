@@ -30,7 +30,6 @@ function appendToComposer(value: string) {
 
 export default function DosthaiRuntime() {
   const [online, setOnline] = useState(true);
-  const [installEvent, setInstallEvent] = useState<any>(null);
   const [draftRestored, setDraftRestored] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [dropActive, setDropActive] = useState(false);
@@ -42,12 +41,6 @@ export default function DosthaiRuntime() {
     const onOffline = () => setOnline(false);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
-
-    const onBeforeInstall = (event: Event) => {
-      event.preventDefault();
-      setInstallEvent(event);
-    };
-    window.addEventListener('beforeinstallprompt', onBeforeInstall as EventListener);
 
     const restoreDraft = () => {
       const composer = findComposer();
@@ -161,7 +154,6 @@ export default function DosthaiRuntime() {
       try { recognition?.abort(); } catch { /* ignore cleanup errors */ }
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
-      window.removeEventListener('beforeinstallprompt', onBeforeInstall as EventListener);
       document.removeEventListener('input', onInput, true);
       document.removeEventListener('click', onVoiceClick, true);
       document.removeEventListener('dragover', onDragOver);
@@ -174,13 +166,6 @@ export default function DosthaiRuntime() {
       delete (window as Window & { __dosthaiSwCleanup?: () => void }).__dosthaiSwCleanup;
     };
   }, [draftRestored]);
-
-  async function install() {
-    if (!installEvent) return;
-    await installEvent.prompt();
-    await installEvent.userChoice;
-    setInstallEvent(null);
-  }
 
   async function refreshForUpdate() {
     setUpdateReady(false);
@@ -196,7 +181,6 @@ export default function DosthaiRuntime() {
     {online && draftRestored && <button onClick={() => { localStorage.removeItem(DRAFT_KEY); setComposerValue(''); setDraftRestored(false); }} style={{ position: 'fixed', left: 12, bottom: 12, zIndex: 100, padding: '8px 12px', border: 0, borderRadius: 10, background: '#1d2430', color: '#fff', fontSize: 12, cursor: 'pointer', boxShadow: '0 8px 30px rgba(0,0,0,.2)' }}>Draft restored · clear</button>}
     {voiceActive && <div style={{ position: 'fixed', right: 12, bottom: 58, zIndex: 101, padding: '8px 12px', borderRadius: 10, background: '#1d2430', color: '#fff', fontSize: 12, boxShadow: '0 8px 30px rgba(0,0,0,.2)' }}>Listening… tap voice again to stop</div>}
     {dropActive && <div style={{ position: 'fixed', inset: 12, zIndex: 99, border: '2px dashed rgba(255,255,255,.55)', borderRadius: 18, background: 'rgba(20,24,32,.72)', color: '#fff', display: 'grid', placeItems: 'center', fontSize: 15, fontWeight: 700, pointerEvents: 'none' }}>Drop a text/code file into Dosthai</div>}
-    {installEvent && <button onClick={install} style={{ position: 'fixed', right: 12, bottom: 12, zIndex: 101, padding: '9px 13px', border: 0, borderRadius: 10, background: '#fff', color: '#111', fontWeight: 700, fontSize: 12, cursor: 'pointer', boxShadow: '0 8px 30px rgba(0,0,0,.25)' }}>Install Dosthai</button>}
     {updateReady && <button onClick={refreshForUpdate} style={{ position: 'fixed', left: '50%', top: 12, transform: 'translateX(-50%)', zIndex: 110, padding: '9px 14px', border: 0, borderRadius: 999, background: '#fff', color: '#111', fontWeight: 800, fontSize: 12, cursor: 'pointer', boxShadow: '0 8px 30px rgba(0,0,0,.25)' }}>New Dosthai version · Refresh</button>}
   </>;
 }
