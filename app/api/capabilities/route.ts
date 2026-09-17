@@ -12,7 +12,7 @@ export async function GET() {
 
   return NextResponse.json({
     app: 'Dosthai AI',
-    version: '0.8.2',
+    version: '0.8.3',
     capabilities: {
       streamingChat: provider,
       fastFirstTokenPath: provider,
@@ -39,6 +39,8 @@ export async function GET() {
       imageGeneration: Boolean(process.env.IMAGE_API_KEY),
       speech: Boolean(process.env.SPEECH_API_KEY),
       githubIntegration: Boolean(process.env.GITHUB_APP_ID || process.env.GITHUB_TOKEN),
+      offlineAppShell: true,
+      installableWebApp: true,
       productionSecurityHeaders: true
     },
     configured: { provider, models: models.length, webResearch, cloudPersistence, authentication },
