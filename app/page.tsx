@@ -121,7 +121,7 @@ export default function Home() {
     }, 400);
   }
 
-  function parseSseEvent(event: string, onToken: (token: string) => void, onError: (message: string) => void) {
+  function parseSseEvent(event: string, onToken: (token: string) => void, onError: (message: string) => void, onStatus?: (message: string) => void, onMeta?: (data: any) => void) {
     let eventType = 'message';
     const dataLines: string[] = [];
     for (const rawLine of event.replace(/\r/g, '').split('\n')) {
@@ -139,9 +139,40 @@ export default function Home() {
     }
     try {
       const parsed = JSON.parse(data);
+      if (eventType === 'ready') { if (typeof parsed?.message === 'string') onStatus?.(parsed.message); return; }
+      if (eventType === 'meta') { onMeta?.(parsed); return; }
+      if (eventType === 'token') { if (typeof parsed?.token === 'string') onToken(parsed.token); return; }
       const token = parsed?.choices?.[0]?.delta?.content;
       if (typeof token === 'string' && token) onToken(token);
     } catch { /* ignore malformed provider event */ }
+  }
+
+  async function consumeAgentStream(response: Response, next: Message[], id: string) {
+    if (!response.body) throw new Error('Agent stream was unavailable.');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder(); let buffer = ''; let answer = ''; let streamError = ''; let meta: any = null;
+    const processEvent = (event: string) => parseSseEvent(event, token => {
+      answer += token;
+      const updated = next.concat({ role: 'assistant' as const, content: answer, createdAt: Date.now() });
+      setMessages(updated);
+      scheduleSave(updated, id);
+    }, message => { streamError = message; }, message => { if (!answer) setNotice(message); }, data => { meta = data; });
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+      for (const event of events) processEvent(event);
+      if (streamError) { await reader.cancel(); throw new Error(streamError); }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) processEvent(buffer);
+    if (streamError) throw new Error(streamError);
+    const sourceText = Array.isArray(meta?.sources) && meta.sources.length ? `\n\nSources:\n${meta.sources.map((s: any) => `- ${s.title}: ${s.url}`).join('\n')}` : '';
+    const finalAnswer = (answer || 'The agent returned an empty response.') + sourceText;
+    const updated = next.concat({ role: 'assistant' as const, content: finalAnswer, createdAt: Date.now() });
+    setMessages(updated); scheduleSave(updated, id, true);
   }
 
   async function send(value = input, historyOverride?: Message[]) {
@@ -163,16 +194,17 @@ export default function Home() {
 
     try {
       if (agentMode) {
-        const response = await fetch('/api/agent', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
+        const response = await fetch('/api/agent/stream', {
+          method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
           body: JSON.stringify({ message: text, history: baseHistory, model: selectedModel.id }), signal: controller.signal
         });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'Agent request failed.');
-        const answer = typeof data.answer === 'string' ? data.answer : 'The agent returned an empty response.';
-        const sourceText = Array.isArray(data.sources) && data.sources.length ? `\n\nSources:\n${data.sources.map((s: any) => `- ${s.title}: ${s.url}`).join('\n')}` : '';
-        const updated = next.concat({ role: 'assistant' as const, content: answer + sourceText, createdAt: Date.now() });
-        setMessages(updated); saveCurrent(updated, id); return;
+        if (!response.ok || !response.body) {
+          const raw = await response.text(); let detail = raw;
+          try { detail = JSON.parse(raw).error || raw; } catch { /* text response */ }
+          throw new Error(detail || 'Agent request failed.');
+        }
+        await consumeAgentStream(response, next, id);
+        return;
       }
 
       const response = await fetch('/api/chat', {
