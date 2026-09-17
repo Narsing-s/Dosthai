@@ -31,7 +31,8 @@ export default function DosthaiEnhancements() {
     if (cpuEnginePromiseRef.current) return cpuEnginePromiseRef.current;
     setLocalStatus('loading');
     setLocalProgress('Starting CPU-compatible browser AI…');
-    cpuEnginePromiseRef.current = Promise.all([import('@wllama/wllama'), import('@wllama/wllama/esm/wasm-from-cdn.js')]).then(async ([wllamaModule, wasmModule]) => {
+    // Use the prebuilt ESM entry explicitly. Turbopack can otherwise resolve the package root to TypeScript source.
+    cpuEnginePromiseRef.current = Promise.all([import('@wllama/wllama/esm/index.js'), import('@wllama/wllama/esm/wasm-from-cdn.js')]).then(async ([wllamaModule, wasmModule]) => {
       const Wllama = (wllamaModule as any).Wllama;
       const WasmFromCDN = (wasmModule as any).default;
       const engine = new Wllama(WasmFromCDN, { parallelDownloads: 3, allowOffline: true, suppressNativeLog: true });
