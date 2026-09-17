@@ -7,11 +7,7 @@ const IMAGE_MAX_CHARS = 7_000_000;
 const LOCAL_MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 
 type LocalStatus = 'idle' | 'loading' | 'ready' | 'error';
-
-type ChatMessage = {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-};
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export default function DosthaiEnhancements() {
   const pendingImageRef = useRef<string | null>(null);
@@ -28,9 +24,7 @@ export default function DosthaiEnhancements() {
   async function getLocalEngine() {
     if (engineRef.current) return engineRef.current;
     if (enginePromiseRef.current) return enginePromiseRef.current;
-    if (!('gpu' in navigator)) {
-      throw new Error('This browser does not expose WebGPU. Use a WebGPU-capable browser or configure a server model.');
-    }
+    if (!('gpu' in navigator)) throw new Error('This browser does not expose WebGPU. Use a WebGPU-capable browser or configure a server model.');
 
     setLocalStatus('loading');
     setLocalProgress('Downloading the local AI model. The first run can take a while; later runs use the browser cache.');
@@ -43,9 +37,7 @@ export default function DosthaiEnhancements() {
           setLocalProgress(`${report.text || 'Loading local AI…'}${progress}`);
         },
         logLevel: 'ERROR',
-      }, {
-        context_window_size: 4096,
-      });
+      }, { context_window_size: 4096 });
       engineRef.current = engine;
       setLocalStatus('ready');
       setLocalProgress('Local AI is ready.');
@@ -59,6 +51,12 @@ export default function DosthaiEnhancements() {
       throw error;
     });
     return enginePromiseRef.current;
+  }
+
+  function localStatusMessage() {
+    if (localStatus === 'loading') return 'Loading your private browser-local AI…';
+    if (localStatus === 'ready') return 'Using your private browser-local AI.';
+    return 'Starting browser-local AI…';
   }
 
   function localSseStream(body: string): Response {
@@ -81,13 +79,7 @@ export default function DosthaiEnhancements() {
           }
           send('ready', { message: localStatusMessage() });
           const engine = await getLocalEngine();
-          const response = await engine.chat.completions.create({
-            messages,
-            temperature: 0.7,
-            top_p: 0.9,
-            max_tokens: 1024,
-            stream: true,
-          });
+          const response = await engine.chat.completions.create({ messages, temperature: 0.7, top_p: 0.9, max_tokens: 1024, stream: true });
           for await (const chunk of response) {
             const token = chunk?.choices?.[0]?.delta?.content || '';
             if (token) send('token', { token });
@@ -102,26 +94,9 @@ export default function DosthaiEnhancements() {
           controller.close();
         }
       },
-      cancel() {
-        try { engineRef.current?.interruptGenerate?.(); } catch {}
-      },
+      cancel() { try { engineRef.current?.interruptGenerate?.(); } catch {} },
     });
-    return new Response(stream, {
-      status: 200,
-      headers: {
-        'content-type': 'text/event-stream; charset=utf-8',
-        'cache-control': 'no-cache, no-transform',
-        connection: 'keep-alive',
-        'x-dosthai-model': LOCAL_MODEL_ID,
-        'x-dosthai-local-mode': 'true',
-      },
-    });
-  }
-
-  function localStatusMessage() {
-    if (localStatus === 'loading') return 'Loading your private browser-local AI…';
-    if (localStatus === 'ready') return 'Using your private browser-local AI.';
-    return 'Starting browser-local AI…';
+    return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-dosthai-model': LOCAL_MODEL_ID, 'x-dosthai-local-mode': 'true' } });
   }
 
   useEffect(() => {
@@ -129,36 +104,24 @@ export default function DosthaiEnhancements() {
     if (!input) return;
     const previousAccept = input.accept;
     input.accept = `${previousAccept},image/png,image/jpeg,image/webp,image/gif`;
-
     const onChange = (event: Event) => {
       const target = event.currentTarget as HTMLInputElement;
       const file = target.files?.[0];
       if (!file || !file.type.startsWith('image/')) return;
       event.stopImmediatePropagation();
-      if (file.size > IMAGE_MAX_BYTES) {
-        window.alert('Images are limited to 2 MB.');
-        target.value = '';
-        return;
-      }
+      if (file.size > IMAGE_MAX_BYTES) { window.alert('Images are limited to 2 MB.'); target.value = ''; return; }
       const reader = new FileReader();
       reader.onload = () => {
         const value = String(reader.result || '');
-        if (!value.startsWith('data:image/') || value.length > IMAGE_MAX_CHARS) {
-          window.alert('That image is too large to send.');
-          return;
-        }
+        if (!value.startsWith('data:image/') || value.length > IMAGE_MAX_CHARS) { window.alert('That image is too large to send.'); return; }
         pendingImageRef.current = value;
         setImageAttached(true);
         target.value = '';
       };
       reader.readAsDataURL(file);
     };
-
     input.addEventListener('change', onChange, true);
-    return () => {
-      input.accept = previousAccept;
-      input.removeEventListener('change', onChange, true);
-    };
+    return () => { input.accept = previousAccept; input.removeEventListener('change', onChange, true); };
   }, []);
 
   useEffect(() => {
@@ -176,9 +139,7 @@ export default function DosthaiEnhancements() {
               pendingImageRef.current = null;
               setImageAttached(false);
             }
-            if (body.model === 'dosthai-local' && !Array.isArray(body.images)) {
-              return localSseStream(JSON.stringify(body));
-            }
+            if (body.model === 'dosthai-local' && !Array.isArray(body.images)) return localSseStream(JSON.stringify(body));
             init = { ...init, body: JSON.stringify(body) };
           }
         } catch {}
@@ -194,7 +155,7 @@ export default function DosthaiEnhancements() {
       engineRef.current = null;
       enginePromiseRef.current = null;
     };
-  }, [localStatus]);
+  }, []);
 
   useEffect(() => {
     const addSpeechButtons = () => {
@@ -202,22 +163,16 @@ export default function DosthaiEnhancements() {
         if (actions.dataset.dosthaiTts === '1') return;
         actions.dataset.dosthaiTts = '1';
         const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = 'Read aloud';
-        button.setAttribute('aria-label', 'Read aloud');
+        button.type = 'button'; button.textContent = 'Read aloud'; button.setAttribute('aria-label', 'Read aloud');
         button.onclick = async () => {
           const article = actions.closest('.message.assistant');
           const text = article?.querySelector<HTMLElement>('.content')?.innerText?.trim();
           if (!text || text.length > 6000) return;
           try {
-            setSpeaking(true);
-            audioRef.current?.pause();
+            setSpeaking(true); audioRef.current?.pause();
             const response = await fetch('/api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
             if (!response.ok) throw new Error('Speech request failed.');
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audioRef.current = audio;
+            const blob = await response.blob(); const url = URL.createObjectURL(blob); const audio = new Audio(url); audioRef.current = audio;
             audio.onended = () => { URL.revokeObjectURL(url); setSpeaking(false); };
             audio.onerror = () => { URL.revokeObjectURL(url); setSpeaking(false); };
             await audio.play();
@@ -232,24 +187,7 @@ export default function DosthaiEnhancements() {
     return () => observer.disconnect();
   }, []);
 
-  if (imageAttached) {
-    return (
-      <>
-        <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}>
-          <span>🖼️ Image ready for the next message</span>
-          <button type="button" onClick={() => { pendingImageRef.current = null; setImageAttached(false); }} style={{ border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer' }}>×</button>
-        </div>
-        {speaking ? <div style={{ position: 'fixed', right: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div> : null}
-      </>
-    );
-  }
-
+  if (imageAttached) return <><div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}><span>🖼️ Image ready for the next message</span><button type="button" onClick={() => { pendingImageRef.current = null; setImageAttached(false); }} style={{ border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer' }}>×</button></div>{speaking ? <div style={{ position: 'fixed', right: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div> : null}</>;
   if (speaking) return <div style={{ position: 'fixed', left: 20, bottom: 96, zIndex: 50, padding: '8px 12px', borderRadius: 12, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', fontSize: 13 }}>🔊 Reading aloud…</div>;
-
-  return localStatus !== 'idle' ? (
-    <div style={{ position: 'fixed', left: 20, bottom: 20, zIndex: 50, maxWidth: 'min(520px, calc(100vw - 40px))', padding: '10px 14px', borderRadius: 14, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}>
-      <strong>🧠 Dosthai Local AI</strong>
-      <div style={{ marginTop: 4, opacity: .8 }}>{localProgress}</div>
-    </div>
-  ) : null;
+  return localStatus !== 'idle' ? <div style={{ position: 'fixed', left: 20, bottom: 20, zIndex: 50, maxWidth: 'min(520px, calc(100vw - 40px))', padding: '10px 14px', borderRadius: 14, background: 'var(--panel, #171a21)', color: 'var(--text, #fff)', boxShadow: '0 8px 30px rgba(0,0,0,.28)', fontSize: 13 }}><strong>🧠 Dosthai Local AI</strong><div style={{ marginTop: 4, opacity: .8 }}>{localProgress}</div></div> : null;
 }
