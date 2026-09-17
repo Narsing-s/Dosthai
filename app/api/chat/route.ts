@@ -1,22 +1,22 @@
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 const SYSTEM_PROMPT = `You are Dosthai AI, a general-purpose AI assistant built for serious everyday and professional work. Be accurate, clear, practical, and honest about uncertainty. Think carefully before answering. Prefer structured answers when useful. For code, provide complete usable examples and call out important assumptions. Never claim to have browsed the web, run code, changed a repository, accessed a private account, or completed an external action unless the application actually supplied that tool result.`;
-
-const DEFAULT_MODELS = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5-mini', 'gpt-5'];
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 30;
-const MAX_HISTORY = 30;
-const MAX_HISTORY_ITEM = 20_000;
+const MAX_HISTORY = 24;
+const MAX_HISTORY_ITEM = 16_000;
+const REQUEST_TIMEOUT_MS = 45_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function allowedModels() {
-  const configured = (process.env.DOSTHAI_MODELS || '')
+  const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
-  return new Set(configured.length ? configured : DEFAULT_MODELS);
+  return [...new Set(configured)];
 }
 
 function clientKey(request: Request) {
@@ -39,8 +39,13 @@ function rateLimited(key: string) {
 function providerHeaders(apiKey: string) {
   return {
     'content-type': 'application/json',
-    authorization: `Bearer ${apiKey}`
+    authorization: `Bearer ${apiKey}`,
+    accept: 'text/event-stream'
   };
+}
+
+function shouldFallback(status: number) {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
 export async function POST(request: Request) {
@@ -62,17 +67,21 @@ export async function POST(request: Request) {
   const models = allowedModels();
 
   if (!message) return NextResponse.json({ error: 'Message is required.' }, { status: 400 });
-  if (message.length > 30000) return NextResponse.json({ error: 'Message is too long. Keep it under 30,000 characters.' }, { status: 413 });
+  if (message.length > 30_000) return NextResponse.json({ error: 'Message is too long. Keep it under 30,000 characters.' }, { status: 413 });
   if (history.length > 100) return NextResponse.json({ error: 'Conversation history is too large.' }, { status: 413 });
 
   const apiKey = process.env.OPENAI_API_KEY;
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const configuredModel = process.env.OPENAI_MODEL || [...models][0];
-  const preferred = models.has(requestedModel) ? requestedModel : (models.has(configuredModel) ? configuredModel : [...models][0]);
-  const fallbackModels = [preferred, ...[...models].filter(model => model !== preferred)].slice(0, 3);
 
-  if (!apiKey) return NextResponse.json({ error: 'No AI provider is configured. Add OPENAI_API_KEY to the server environment.' }, { status: 503 });
+  if (!apiKey) {
+    return NextResponse.json({ error: 'No AI provider is configured. Add OPENAI_API_KEY to the server environment.' }, { status: 503 });
+  }
+  if (!models.length) {
+    return NextResponse.json({ error: 'No AI model is configured. Add OPENAI_MODEL or DOSTHAI_MODELS to the server environment.' }, { status: 503 });
+  }
 
+  const preferred = models.includes(requestedModel) ? requestedModel : models[0];
+  const fallbackModels = [preferred, ...models.filter(model => model !== preferred)].slice(0, 3);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...history.slice(-MAX_HISTORY)
@@ -82,13 +91,23 @@ export async function POST(request: Request) {
   ];
 
   let lastDetail = 'Provider request failed';
+
   for (const model of fallbackModels) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
     try {
       const upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: providerHeaders(apiKey),
-        body: JSON.stringify({ model, messages, stream: true }),
-        cache: 'no-store'
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: true,
+          stream_options: { include_usage: true }
+        }),
+        cache: 'no-store',
+        signal: controller.signal
       });
 
       if (upstream.ok && upstream.body) {
@@ -106,8 +125,13 @@ export async function POST(request: Request) {
 
       const detail = await upstream.text().catch(() => 'Provider request failed');
       lastDetail = detail.slice(0, 500);
+      if (!shouldFallback(upstream.status)) break;
     } catch (error) {
-      lastDetail = error instanceof Error ? error.message : 'Network request failed';
+      lastDetail = error instanceof Error && error.name === 'AbortError'
+        ? 'The AI provider timed out.'
+        : error instanceof Error ? error.message : 'Network request failed';
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
