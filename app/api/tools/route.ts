@@ -11,7 +11,7 @@ const tools = [
   { id: 'code-sandbox', name: 'Code Sandbox', description: 'Execute generated code in an isolated environment.', category: 'developer', requires: 'CODE_EXECUTION_ENABLED', mode: 'execute' },
   { id: 'github', name: 'GitHub', description: 'Read and operate on authorized repositories, issues and pull requests.', category: 'developer', requires: 'GITHUB_APP / OAuth credentials', mode: 'execute' },
   { id: 'image', name: 'Image Generation', description: 'Generate or edit images from prompts.', category: 'multimodal', requires: 'IMAGE_API_KEY or OPENAI_API_KEY', mode: 'execute' },
-  { id: 'voice', name: 'Voice', description: 'Speech transcription and text-to-speech.', category: 'multimodal', requires: 'SPEECH_API_KEY', mode: 'execute' }
+  { id: 'voice', name: 'Voice', description: 'Speech transcription and text-to-speech.', category: 'multimodal', requires: 'SPEECH_API_KEY or OPENAI_API_KEY', mode: 'execute' }
 ] as const;
 
 function configured(id: string) {
@@ -23,7 +23,7 @@ function configured(id: string) {
     case 'code-sandbox': return process.env.CODE_EXECUTION_ENABLED === 'true';
     case 'github': return Boolean(process.env.GITHUB_APP_ID && process.env.GITHUB_TOKEN);
     case 'image': return Boolean(process.env.IMAGE_API_KEY || process.env.OPENAI_API_KEY);
-    case 'voice': return Boolean(process.env.SPEECH_API_KEY);
+    case 'voice': return Boolean(process.env.SPEECH_API_KEY || process.env.OPENAI_API_KEY);
     default: return false;
   }
 }
