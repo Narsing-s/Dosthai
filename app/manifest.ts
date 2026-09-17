@@ -6,9 +6,18 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: 'Dosthai',
     description: 'A personal AI workspace for chat, coding, research and creation.',
     start_url: '/',
+    scope: '/',
     display: 'standalone',
+    orientation: 'portrait-primary',
     background_color: '#090b10',
     theme_color: '#090b10',
-    icons: []
+    icons: [
+      {
+        src: '/icon.svg',
+        sizes: 'any',
+        type: 'image/svg+xml',
+        purpose: 'any maskable'
+      }
+    ]
   };
 }
