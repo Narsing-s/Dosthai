@@ -24,24 +24,46 @@ export default function DosthaiEnhancements() {
   async function getLocalEngine() {
     if (engineRef.current) return engineRef.current;
     if (enginePromiseRef.current) return enginePromiseRef.current;
-    if (!('gpu' in navigator)) throw new Error('This browser does not expose WebGPU. Use a WebGPU-capable browser or configure a server model.');
+
+    const gpu = (navigator as Navigator & { gpu?: { requestAdapter?: () => Promise<unknown> } }).gpu;
+    if (!gpu?.requestAdapter) {
+      throw new Error('WebGPU is not available in this browser. Open Dosthai in the latest Chrome or Edge with hardware acceleration enabled.');
+    }
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) {
+      throw new Error('WebGPU is disabled or unavailable on this device. Enable browser hardware acceleration and try again.');
+    }
 
     setLocalStatus('loading');
-    setLocalProgress('Downloading the local AI model. The first run can take a while; later runs use the browser cache.');
+    setLocalProgress('Starting private browser-local AI…');
     enginePromiseRef.current = import('@mlc-ai/web-llm').then(async webllm => {
-      const worker = new Worker(new URL('../workers/dosthai-local-ai.worker.ts', import.meta.url), { type: 'module' });
-      workerRef.current = worker;
-      const engine = await webllm.CreateWebWorkerMLCEngine(worker, LOCAL_MODEL_ID, {
+      const engineConfig = {
         initProgressCallback: (report: { text?: string; progress?: number }) => {
           const progress = typeof report.progress === 'number' ? ` ${Math.round(report.progress * 100)}%` : '';
           setLocalProgress(`${report.text || 'Loading local AI…'}${progress}`);
         },
-        logLevel: 'ERROR',
-      }, { context_window_size: 4096 });
-      engineRef.current = engine;
-      setLocalStatus('ready');
-      setLocalProgress('Local AI is ready.');
-      return engine;
+        logLevel: 'ERROR' as const,
+      };
+
+      try {
+        setLocalProgress('Starting the AI worker…');
+        const worker = new Worker(new URL('../workers/dosthai-local-ai.worker.ts', import.meta.url), { type: 'module' });
+        workerRef.current = worker;
+        const engine = await webllm.CreateWebWorkerMLCEngine(worker, LOCAL_MODEL_ID, engineConfig, { context_window_size: 4096 });
+        engineRef.current = engine;
+        setLocalStatus('ready');
+        setLocalProgress('Local AI is ready.');
+        return engine;
+      } catch (workerError) {
+        workerRef.current?.terminate();
+        workerRef.current = null;
+        setLocalProgress('AI worker could not start; switching to direct browser AI…');
+        const engine = await webllm.CreateMLCEngine(LOCAL_MODEL_ID, engineConfig, { context_window_size: 4096 });
+        engineRef.current = engine;
+        setLocalStatus('ready');
+        setLocalProgress('Local AI is ready.');
+        return engine;
+      }
     }).catch(error => {
       enginePromiseRef.current = null;
       workerRef.current?.terminate();
