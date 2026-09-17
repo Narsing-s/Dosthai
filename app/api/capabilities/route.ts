@@ -38,7 +38,7 @@ export async function GET() {
       'Sandboxed code execution with resource limits',
       'Long-running resumable agents, background jobs and observability'
     ] : [
-      'Connect a model inference service for full generative AI',
+      'Optional cloud model provider for larger hosted models and advanced multimodal/agent workloads',
       'Authenticated cloud conversations with account isolation',
       'Real web research with citations and source controls',
       'Expanded native tool calling and multi-step agent orchestration'
