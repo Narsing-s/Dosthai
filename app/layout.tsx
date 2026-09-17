@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import DosthaiRuntime from './components/dosthai-runtime';
+import DosthaiEnhancements from './components/dosthai-enhancements';
 
 export const metadata: Metadata = {
   title: 'Dosthai AI',
@@ -18,5 +19,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en" suppressHydrationWarning><body>{children}<DosthaiRuntime /></body></html>;
+  return <html lang="en" suppressHydrationWarning><body>{children}<DosthaiRuntime /><DosthaiEnhancements /></body></html>;
 }
