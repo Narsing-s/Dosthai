@@ -59,7 +59,7 @@ export default function DosthaiEnhancements() {
         try {
           const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
           if (body && typeof body === 'object') {
-            body.images = [pendingImageRef.current];
+            body.images = [{ dataUrl: pendingImageRef.current, detail: 'auto' }];
             init = { ...init, body: JSON.stringify(body) };
             pendingImageRef.current = null;
             setImageAttached(false);
