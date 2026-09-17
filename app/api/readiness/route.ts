@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-const checks = [
-  ['AI provider', Boolean(process.env.OPENAI_API_KEY), 'OPENAI_API_KEY'],
+const optionalChecks = [
   ['Database persistence', Boolean(process.env.DATABASE_URL), 'DATABASE_URL'],
   ['Authentication secret', Boolean(process.env.AUTH_SECRET), 'AUTH_SECRET'],
   ['Object storage', Boolean(process.env.STORAGE_BUCKET), 'STORAGE_BUCKET'],
@@ -16,18 +16,31 @@ const checks = [
 ] as const;
 
 export async function GET() {
-  const result = checks.map(([name, configured, requirement]) => ({ name, configured, requirement }));
-  const blockers = result.filter((item) => !item.configured).map((item) => item.name);
+  const apiConfigured = Boolean(process.env.OPENAI_API_KEY);
+  const models = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  const checks = [
+    { name: 'AI provider', configured: apiConfigured, required: true, requirement: 'OPENAI_API_KEY' },
+    { name: 'AI model', configured: models.length > 0, required: true, requirement: 'OPENAI_MODEL or DOSTHAI_MODELS' },
+    ...optionalChecks.map(([name, configured, requirement]) => ({ name, configured, required: false, requirement }))
+  ];
+  const blockers = checks.filter(item => item.required && !item.configured).map(item => item.name);
+  const optional = checks.filter(item => !item.required && !item.configured).map(item => item.name);
+
   return NextResponse.json({
     service: 'dosthai-ai',
     readyForProduction: blockers.length === 0,
-    requiredCore: {
-      chat: result[0].configured,
-      persistence: result[1].configured,
-      authentication: result[2].configured
+    core: {
+      chat: apiConfigured && models.length > 0,
+      streaming: true,
+      modelRouting: models.length > 0,
+      localHistory: true,
+      tools: true,
+      agent: apiConfigured && models.length > 0
     },
-    checks: result,
+    checks,
     blockers,
-    note: 'Missing optional integrations are reported explicitly; Dosthai must never pretend an unavailable tool is active.'
+    optionalIntegrations: optional,
+    note: 'Optional integrations are reported separately. Dosthai never pretends an unavailable integration is active.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
