@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
 const IMAGE_MAX_CHARS = 7_000_000;
-const LOCAL_MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
+// Smaller q4f32 model: much lower memory use and broader device compatibility than the 1B q4f16 model.
+const LOCAL_MODEL_ID = 'SmolLM2-360M-Instruct-q4f32-MLC';
 
 type LocalStatus = 'idle' | 'loading' | 'ready' | 'error';
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -27,11 +28,11 @@ export default function DosthaiEnhancements() {
 
     const gpu = (navigator as Navigator & { gpu?: { requestAdapter?: () => Promise<unknown> } }).gpu;
     if (!gpu?.requestAdapter) {
-      throw new Error('WebGPU is not available in this browser. Open Dosthai in the latest Chrome or Edge with hardware acceleration enabled.');
+      throw new Error('WebGPU is not available. Open Dosthai in the latest Chrome or Edge with hardware acceleration enabled.');
     }
     const adapter = await gpu.requestAdapter();
     if (!adapter) {
-      throw new Error('WebGPU is disabled or unavailable on this device. Enable browser hardware acceleration and try again.');
+      throw new Error('WebGPU is disabled or unavailable on this device. Enable hardware acceleration and try again.');
     }
 
     setLocalStatus('loading');
@@ -54,7 +55,7 @@ export default function DosthaiEnhancements() {
         setLocalStatus('ready');
         setLocalProgress('Local AI is ready.');
         return engine;
-      } catch (workerError) {
+      } catch {
         workerRef.current?.terminate();
         workerRef.current = null;
         setLocalProgress('AI worker could not start; switching to direct browser AI…');
@@ -101,7 +102,7 @@ export default function DosthaiEnhancements() {
           }
           send('ready', { message: localStatusMessage() });
           const engine = await getLocalEngine();
-          const response = await engine.chat.completions.create({ messages, temperature: 0.7, top_p: 0.9, max_tokens: 1024, stream: true });
+          const response = await engine.chat.completions.create({ messages, temperature: 0.7, top_p: 0.9, max_tokens: 768, stream: true });
           for await (const chunk of response) {
             const token = chunk?.choices?.[0]?.delta?.content || '';
             if (token) send('token', { token });
