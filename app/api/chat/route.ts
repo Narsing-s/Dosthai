@@ -56,7 +56,22 @@ function shouldFallback(status: number) {
   return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
-function streamWithHeartbeat(body: ReadableStream<Uint8Array>, controller: AbortController) {
+async function fetchProvider(url: string, init: RequestInit, timeoutMs: number) {
+  const timeoutController = new AbortController();
+  const parentSignal = init.signal;
+  const onParentAbort = () => timeoutController.abort();
+  if (parentSignal?.aborted) timeoutController.abort();
+  else parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: timeoutController.signal });
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
+  }
+}
+
+function streamWithHeartbeat(body: ReadableStream<Uint8Array>, controller: AbortController, clientSignal: AbortSignal) {
   const reader = body.getReader();
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -66,12 +81,27 @@ function streamWithHeartbeat(body: ReadableStream<Uint8Array>, controller: Abort
   const cleanup = () => {
     if (heartbeat) clearInterval(heartbeat);
     if (timeout) clearTimeout(timeout);
+    clientSignal.removeEventListener('abort', abortFromClient);
     heartbeat = undefined;
     timeout = undefined;
   };
 
+  const abortFromClient = () => {
+    controller.abort();
+    reader.cancel().catch(() => undefined);
+  };
+
   return new ReadableStream<Uint8Array>({
     start(streamController) {
+      if (clientSignal.aborted) {
+        settled = true;
+        controller.abort();
+        cleanup();
+        streamController.close();
+        return;
+      }
+
+      clientSignal.addEventListener('abort', abortFromClient, { once: true });
       streamController.enqueue(encoder.encode(': dosthai-stream-open\n\n'));
       heartbeat = setInterval(() => {
         try { streamController.enqueue(encoder.encode(': dosthai-heartbeat\n\n')); } catch { /* stream already closed */ }
@@ -81,8 +111,8 @@ function streamWithHeartbeat(body: ReadableStream<Uint8Array>, controller: Abort
         if (!settled) {
           settled = true;
           cleanup();
-          streamController.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: 'The AI provider timed out.' })}\n\n`));
-          streamController.close();
+          try { streamController.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: 'The AI provider timed out.' })}\n\n`)); } catch { /* stream already closed */ }
+          try { streamController.close(); } catch { /* stream already closed */ }
           reader.cancel().catch(() => undefined);
         }
       }, REQUEST_TIMEOUT_MS);
@@ -165,21 +195,25 @@ export async function POST(request: Request) {
   let lastDetail = 'Provider request failed';
 
   for (const model of fallbackModels) {
+    if (request.signal.aborted) return new Response(null, { status: 499 });
+
     const controller = new AbortController();
     const abortFromClient = () => controller.abort();
     request.signal.addEventListener('abort', abortFromClient, { once: true });
+    let returnedStream = false;
 
     try {
-      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+      const upstream = await fetchProvider(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: providerHeaders(apiKey),
         body: JSON.stringify({ model, messages, stream: true }),
         cache: 'no-store',
         signal: controller.signal
-      });
+      }, REQUEST_TIMEOUT_MS);
 
       if (upstream.ok && upstream.body) {
-        const stream = streamWithHeartbeat(upstream.body, controller);
+        returnedStream = true;
+        const stream = streamWithHeartbeat(upstream.body, controller, request.signal);
         return new Response(stream, {
           status: 200,
           headers: {
@@ -196,14 +230,12 @@ export async function POST(request: Request) {
       lastDetail = detail.slice(0, 500);
       if (!shouldFallback(upstream.status)) break;
     } catch (error) {
-      if (request.signal.aborted) {
-        return new Response(null, { status: 499 });
-      }
+      if (request.signal.aborted) return new Response(null, { status: 499 });
       lastDetail = error instanceof Error && error.name === 'AbortError'
         ? 'The AI provider timed out.'
         : error instanceof Error ? error.message : 'Network request failed';
     } finally {
-      request.signal.removeEventListener('abort', abortFromClient);
+      if (!returnedStream) request.signal.removeEventListener('abort', abortFromClient);
     }
   }
 
