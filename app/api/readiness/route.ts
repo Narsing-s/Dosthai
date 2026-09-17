@@ -19,7 +19,7 @@ const optionalChecks = [
 export async function GET() {
   const provider = Boolean(process.env.OPENAI_API_KEY && (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL));
   const checks = [
-    { name: 'Local AI mode', configured: true, required: true, requirement: 'Built into Dosthai; no credential required' },
+    { name: 'Local AI mode', configured: true, required: true, requirement: 'Browser-local WebGPU inference; no credential required' },
     { name: 'Cloud model provider', configured: provider, required: false, requirement: 'OPENAI_API_KEY + OPENAI_MODEL or DOSTHAI_MODELS' },
     ...optionalChecks.map(([name, configured, requirement]) => ({ name, configured, required: false, requirement }))
   ];
@@ -34,7 +34,7 @@ export async function GET() {
     blockers: [],
     optionalIntegrations: optional,
     note: provider
-      ? 'A configured model provider is active.'
-      : 'Dosthai runs without API credentials in transparent local mode. Local mode does not pretend to be a large language model; connect a provider when full generative AI is required. Missing optional integrations are reported explicitly.'
+      ? 'A configured cloud model provider is active, while browser-local AI remains available.'
+      : 'Dosthai runs with browser-local generative AI and no API credentials. A cloud provider is optional for stronger hosted models and additional server-side capabilities. Missing optional integrations are reported explicitly.'
   }, { headers: { 'cache-control': 'no-store' } });
 }
