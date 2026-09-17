@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import './ui-polish.css';
+import './chatgpt-ui.css';
 import DosthaiRuntime from './components/dosthai-runtime';
 import DosthaiEnhancements from './components/dosthai-enhancements';
 
@@ -16,7 +17,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#090b10'
+  themeColor: '#212121'
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
