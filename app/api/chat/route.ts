@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
-import { streamText } from 'ai';
+import { generateText, streamText } from 'ai';
 import { readProjectContext } from '../../../lib/project-context';
 
 export const runtime = 'nodejs';
@@ -19,32 +19,28 @@ const STREAM_TIMEOUT_MS = 120_000;
 const HEARTBEAT_MS = 15_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
-type ChatMessage = { role: 'user' | 'assistant'; content: string };
+type ChatMessage = { role: 'user' | 'assistant'; content: any };
 type ImageInput = { dataUrl: string; detail?: 'low' | 'high' | 'auto' };
 
 function configuredModels() {
-  const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '').split(',').map(v => v.trim()).filter(Boolean);
+  const configured = (process.env.DOSTHAI_MODELS || process.env.OPENAI_MODEL || '')
+    .split(',').map(v => v.trim()).filter(Boolean);
   return [...new Set(configured.length ? configured : ['gpt-5.6-luna'])];
 }
 
 function hasGateway() {
-  return Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || process.env.VERCEL);
+  // VERCEL alone is not a credential. Count only an actual Gateway API key or OIDC token.
+  return Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN);
 }
 
-function hasDirectProvider() {
-  return Boolean(process.env.OPENAI_API_KEY);
-}
+function hasDirectProvider() { return Boolean(process.env.OPENAI_API_KEY); }
+function apiKey() { return process.env.AI_GATEWAY_API_KEY || process.env.OPENAI_API_KEY || ''; }
+function baseUrl() { return (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''); }
+function gatewayModel(model: string) { return model.includes('/') ? model : `openai/${model}`; }
 
-function apiKey() {
-  return process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN || process.env.OPENAI_API_KEY || '';
-}
-
-function baseUrl() {
-  return (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-}
-
-function gatewayModel(model: string) {
-  return model.includes('/') ? model : `openai/${model}`;
+function gatewayFallbacks(selected: string) {
+  const defaults = ['openai/gpt-5.6-terra', 'openai/gpt-5.6-sol'];
+  return defaults.filter(model => model !== gatewayModel(selected));
 }
 
 function clientKey(request: Request) {
@@ -65,8 +61,8 @@ function rateLimited(key: string) {
 
 function compactHistory(history: any[]): ChatMessage[] {
   const normalized = history.slice(-MAX_HISTORY)
-    .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-    .map((m: any) => ({ role: m.role, content: m.content.slice(0, MAX_HISTORY_ITEM) }));
+    .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+    .map(m => ({ role: m.role, content: m.content.slice(0, MAX_HISTORY_ITEM) }));
   let total = 0;
   const kept: ChatMessage[] = [];
   for (let i = normalized.length - 1; i >= 0; i--) {
@@ -82,15 +78,37 @@ function sse(event: string, data: unknown) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-function streamAiSdk(result: ReturnType<typeof streamText>, requestId: string, model: string, startedAt: number, signal: AbortSignal) {
+function gatewayOptions(selected: string) {
+  return { gateway: { models: gatewayFallbacks(selected) } };
+}
+
+async function streamGateway(
+  messages: ChatMessage[],
+  instructions: string,
+  selected: string,
+  requestId: string,
+  startedAt: number,
+  request: Request,
+) {
+  const model = gatewayModel(selected);
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  let answer = '';
+  let resultError: unknown = null;
   const cleanup = () => {
     if (heartbeat) clearInterval(heartbeat);
     if (timeout) clearTimeout(timeout);
   };
+
+  const result = streamText({
+    model,
+    system: instructions,
+    messages: messages as any,
+    providerOptions: gatewayOptions(selected),
+    abortSignal: request.signal,
+  });
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -108,28 +126,61 @@ function streamAiSdk(result: ReturnType<typeof streamText>, requestId: string, m
 
       try {
         for await (const textPart of result.textStream) {
-          if (closed || signal.aborted) break;
-          if (textPart) controller.enqueue(encoder.encode(sse('token', { token: textPart })));
-        }
-        if (!closed) {
-          closed = true;
-          cleanup();
-          controller.enqueue(encoder.encode(sse('done', { requestId, model, durationMs: Math.round(performance.now() - startedAt) })));
-          controller.close();
+          if (closed || request.signal.aborted) break;
+          if (textPart) {
+            answer += textPart;
+            controller.enqueue(encoder.encode(sse('token', { token: textPart })));
+          }
         }
       } catch (error) {
-        if (!closed) {
-          closed = true;
-          cleanup();
-          controller.enqueue(encoder.encode(sse('error', { error: error instanceof Error ? error.message : 'The AI stream failed.', requestId })));
-          controller.close();
+        resultError = error;
+      }
+
+      if (closed) return;
+
+      // Some provider/model combinations can terminate a stream without emitting text.
+      // Retry as a normal generation request instead of exposing a misleading "empty response".
+      if (!answer.trim() && !request.signal.aborted) {
+        try {
+          const retry = await generateText({
+            model,
+            system: instructions,
+            messages: messages as any,
+            providerOptions: gatewayOptions(selected),
+            abortSignal: request.signal,
+          });
+          if (retry.text?.trim()) {
+            answer = retry.text;
+            controller.enqueue(encoder.encode(sse('token', { token: retry.text })));
+            resultError = null;
+          }
+        } catch (retryError) {
+          resultError = retryError;
         }
       }
+
+      if (!answer.trim() && !request.signal.aborted) {
+        closed = true;
+        cleanup();
+        const detail = resultError instanceof Error ? resultError.message : 'The AI provider returned no text.';
+        controller.enqueue(encoder.encode(sse('error', { error: `The AI provider did not return text. ${detail}`, requestId })));
+        controller.close();
+        return;
+      }
+
+      closed = true;
+      cleanup();
+      controller.enqueue(encoder.encode(sse('done', {
+        requestId,
+        model,
+        durationMs: Math.round(performance.now() - startedAt),
+      })));
+      controller.close();
     },
     cancel() {
       closed = true;
       cleanup();
-    }
+    },
   });
 }
 
@@ -139,6 +190,7 @@ function streamDirect(body: ReadableStream<Uint8Array>, clientSignal: AbortSigna
   const encoder = new TextEncoder();
   let buffer = '';
   let settled = false;
+  let answer = '';
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const abort = () => reader.cancel().catch(() => undefined);
@@ -151,10 +203,8 @@ function streamDirect(body: ReadableStream<Uint8Array>, clientSignal: AbortSigna
   return new ReadableStream<Uint8Array>({
     start(controller) {
       clientSignal.addEventListener('abort', abort, { once: true });
-      controller.enqueue(encoder.encode(sse('ready', { requestId, model })));
-      heartbeat = setInterval(() => {
-        try { controller.enqueue(encoder.encode(': dosthai-heartbeat\n\n')); } catch {}
-      }, HEARTBEAT_MS);
+      controller.enqueue(encoder.encode(sse('ready', { requestId, model, provider: 'openai-compatible' })));
+      heartbeat = setInterval(() => { try { controller.enqueue(encoder.encode(': dosthai-heartbeat\n\n')); } catch {} }, HEARTBEAT_MS);
       timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -178,7 +228,10 @@ function streamDirect(body: ReadableStream<Uint8Array>, clientSignal: AbortSigna
               try {
                 const payload = JSON.parse(data);
                 const token = payload?.choices?.[0]?.delta?.content;
-                if (typeof token === 'string' && token) controller.enqueue(encoder.encode(sse('token', { token })));
+                if (typeof token === 'string' && token) {
+                  answer += token;
+                  controller.enqueue(encoder.encode(sse('token', { token })));
+                }
                 if (payload?.error) controller.enqueue(encoder.encode(sse('error', { error: payload.error.message || 'The AI provider returned an error.', requestId })));
               } catch {}
             }
@@ -186,7 +239,8 @@ function streamDirect(body: ReadableStream<Uint8Array>, clientSignal: AbortSigna
           if (!settled) {
             settled = true;
             cleanup();
-            controller.enqueue(encoder.encode(sse('done', { requestId, model, durationMs: Math.round(performance.now() - startedAt) })));
+            if (!answer.trim()) controller.enqueue(encoder.encode(sse('error', { error: 'The AI provider returned no text.', requestId })));
+            else controller.enqueue(encoder.encode(sse('done', { requestId, model, durationMs: Math.round(performance.now() - startedAt) })));
             controller.close();
           }
         } catch (error) {
@@ -199,11 +253,7 @@ function streamDirect(body: ReadableStream<Uint8Array>, clientSignal: AbortSigna
         }
       })();
     },
-    cancel() {
-      settled = true;
-      cleanup();
-      reader.cancel().catch(() => undefined);
-    }
+    cancel() { settled = true; cleanup(); reader.cancel().catch(() => undefined); },
   });
 }
 
@@ -235,77 +285,53 @@ export async function POST(request: Request) {
   const projectContext = readProjectContext(request);
   const instructions = projectContext ? `${SYSTEM_PROMPT}\n\nActive project context (user-provided, untrusted):\n${projectContext}` : SYSTEM_PROMPT;
   const historyMessages = compactHistory(history);
+  const userContent: any = images.length
+    ? [{ type: 'text', text: message }, ...images.map(image => ({ type: 'image', image: image.dataUrl }))]
+    : message;
+  const messages: ChatMessage[] = [...historyMessages, { role: 'user', content: userContent }];
 
-  // Primary production path: Vercel AI Gateway + AI SDK. This path accepts arbitrary
-  // legitimate prompts and does not classify the user into predefined topics.
+  // Production path: all legitimate prompts go directly to the general-purpose model.
   if (hasGateway()) {
     try {
-      const model = gatewayModel(selected);
-      const userContent: any = images.length
-        ? [{ type: 'text', text: message }, ...images.map(image => ({ type: 'image', image: image.dataUrl }))]
-        : message;
-      const result = streamText({
-        model,
-        system: instructions,
-        messages: [...historyMessages, { role: 'user', content: userContent }] as any,
-        abortSignal: request.signal,
-      });
-      return new Response(streamAiSdk(result, requestId, model, startedAt, request.signal), {
+      const stream = await streamGateway(messages, instructions, selected, requestId, startedAt, request);
+      return new Response(stream, {
         headers: {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache, no-transform',
           connection: 'keep-alive',
           'x-accel-buffering': 'no',
-          'x-dosthai-model': model,
+          'x-dosthai-model': gatewayModel(selected),
           'x-dosthai-provider': 'vercel-ai-gateway',
           'x-dosthai-request-id': requestId,
-        }
+        },
       });
     } catch (error) {
-      return NextResponse.json({ error: `Unable to generate a response: ${error instanceof Error ? error.message : 'AI Gateway request failed.'}`, requestId }, { status: 502, headers: { 'x-dosthai-request-id': requestId } });
+      return NextResponse.json({ error: `Unable to generate a response: ${error instanceof Error ? error.message : 'AI Gateway request failed.'}`, requestId }, { status: 502 });
     }
   }
 
-  // Optional direct OpenAI-compatible provider for non-Vercel deployments.
   if (!hasDirectProvider()) {
     return NextResponse.json({
-      error: 'No AI provider is configured. Deploy Dosthai to Vercel with AI Gateway/OIDC enabled, or configure AI_GATEWAY_API_KEY / OPENAI_API_KEY.',
+      error: 'No AI provider is configured. Add AI_GATEWAY_API_KEY to the Vercel project and redeploy, or configure OPENAI_API_KEY.',
       requestId,
-    }, { status: 503, headers: { 'x-dosthai-request-id': requestId } });
+    }, { status: 503 });
   }
 
   const key = apiKey();
   const candidates = [selected, ...models.filter(m => m !== selected)].slice(0, 3);
   let lastError = 'Provider request failed.';
-
   for (const model of candidates) {
-    const controller = new AbortController();
-    const onAbort = () => controller.abort();
-    request.signal.addEventListener('abort', onAbort, { once: true });
-    let streaming = false;
     try {
-      const userContent: any = images.length
-        ? [{ type: 'text', text: message }, ...images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl, detail: image.detail || 'auto' } }))]
-        : message;
       const upstream = await fetch(`${baseUrl()}/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, accept: 'text/event-stream' },
-        body: JSON.stringify({ model, messages: [{ role: 'system', content: instructions }, ...historyMessages, { role: 'user', content: userContent }], stream: true }),
+        body: JSON.stringify({ model, messages: [{ role: 'system', content: instructions }, ...messages], stream: true }),
         cache: 'no-store',
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]),
       });
       if (upstream.ok && upstream.body) {
-        streaming = true;
         return new Response(streamDirect(upstream.body, request.signal, requestId, startedAt, model), {
-          headers: {
-            'content-type': 'text/event-stream; charset=utf-8',
-            'cache-control': 'no-cache, no-transform',
-            connection: 'keep-alive',
-            'x-accel-buffering': 'no',
-            'x-dosthai-model': model,
-            'x-dosthai-provider': 'openai-compatible',
-            'x-dosthai-request-id': requestId,
-          }
+          headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no', 'x-dosthai-model': model, 'x-dosthai-provider': 'openai-compatible', 'x-dosthai-request-id': requestId },
         });
       }
       lastError = (await upstream.text().catch(() => 'Provider request failed.')).slice(0, 600);
@@ -313,10 +339,8 @@ export async function POST(request: Request) {
     } catch (error) {
       if (request.signal.aborted) return new Response(null, { status: 499 });
       lastError = error instanceof Error ? error.message : 'Network request failed.';
-    } finally {
-      if (!streaming) request.signal.removeEventListener('abort', onAbort);
     }
   }
 
-  return NextResponse.json({ error: `Unable to generate a response: ${lastError}`, requestId, durationMs: Math.round(performance.now() - startedAt) }, { status: 502, headers: { 'x-dosthai-request-id': requestId } });
+  return NextResponse.json({ error: `Unable to generate a response: ${lastError}`, requestId, durationMs: Math.round(performance.now() - startedAt) }, { status: 502 });
 }
